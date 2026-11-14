@@ -1,6 +1,6 @@
 {
   "name": "@wolfsdk/review",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "<wolf-review>: review and edit DOCX, XLSX and PPTX in the browser on the Wolf engine",
   "private": true,
   "type": "module",
