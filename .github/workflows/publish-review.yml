@@ -1,0 +1,99 @@
+# Builds and checks @wolfsdk/review (packages/review) and publishes the checked tarball to
+# npm with provenance on review-v<version> tags. workflow_dispatch builds, packs and checks
+# without publishing.
+#
+# The publish job authenticates through the npm trusted publisher for this repository and
+# workflow (environment npm). Before that publisher exists, an NPM_TOKEN repository secret
+# can publish once; delete the secret after the trusted publisher is configured.
+name: publish-review
+
+on:
+  push:
+    tags:
+      - "review-v*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-review-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: "1.4.0"
+      - name: Check that the tag names the package version
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          version=$(python3 -c 'import json; print(json.load(open("packages/review/package.json", "rb"))["version"])')
+          if [ "$GITHUB_REF_NAME" != "review-v$version" ]; then
+            echo "publish-review: tag $GITHUB_REF_NAME does not name version $version" >&2
+            exit 1
+          fi
+      - name: Install locked dependencies
+        run: bun install --frozen-lockfile
+      - name: Build, pack and check @wolfsdk/review
+        run: bun run --cwd packages/review check
+      - name: Record the tarball digest
+        working-directory: packages/review/pack
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          tarballs=(*.tgz)
+          if [ "${#tarballs[@]}" -ne 1 ]; then
+            echo "publish-review: expected one .tgz in pack/, found ${#tarballs[@]}" >&2
+            exit 1
+          fi
+          sha256sum -- "${tarballs[0]}" | tee SHA256SUMS >>"$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: review-tarball
+          path: |
+            packages/review/pack/*.tgz
+            packages/review/pack/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 30
+
+  publish:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/review-v')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    environment:
+      name: npm
+      url: https://www.npmjs.com/package/@wolfsdk/review
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: review-tarball
+          path: dist
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "24"
+      - name: Verify the tarball digest
+        working-directory: dist
+        run: sha256sum --check --strict SHA256SUMS
+      - name: Publish @wolfsdk/review to npm with provenance
+        working-directory: dist
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -euo pipefail
+          npm install --global npm@^11.6.0
+          if [ -n "${NODE_AUTH_TOKEN:-}" ]; then
+            npm config set //registry.npmjs.org/:_authToken "$NODE_AUTH_TOKEN" --location project
+          fi
+          tarball=$(awk '{print $2}' SHA256SUMS)
+          npm publish --provenance --access public --registry https://registry.npmjs.org "./$tarball"
