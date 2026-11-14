@@ -1,9 +1,112 @@
-# WolfSDK web workspace
+# Wolf Workspace
 
-The browser side of WolfSDK: one custom element, `<wolf-review>`, that opens a DOCX, XLSX or
-PPTX, shows it, edits it through the engine and exports a review session. The engine is the
-`wolf-web` WebAssembly module fetched from the WolfSDK release channel (`https://wolfsdk.com/download/wolf`); nothing here
-reimplements format logic.
+Wolf Workspace is a self-hosted place where a team and its AI agents edit and review Word, Excel
+and PowerPoint files together. Documents live in shared rooms. People edit them in the browser.
+Agents connect over the Model Context Protocol (MCP) and propose changes, a person approves or
+rejects each proposal, and the room keeps every revision.
+
+![A room with three documents. An agent has proposed a change to a Word file and a person is reviewing it.](docs/media/workspace-review.png)
+
+Start it with Docker:
+
+```sh
+git clone https://github.com/wolfsdk/workspace.git
+cd workspace
+docker compose up -d
+docker compose logs workspace     # prints the address to sign in at
+```
+
+Open the printed address, create a room, and drop a DOCX, XLSX or PPTX file into it.
+
+## What is open source and what is not
+
+Wolf Workspace is not open source as a whole. The code in this repository is open source. The Wolf
+engine that opens, edits, renders and saves every document is a closed binary.
+
+|Part|Licence|
+|---|---|
+|This repository: the room server, the browser workspace, the MCP server, the pack engine, the CLI and the container image built from them|Apache-2.0|
+|`@wolfsdk/protocol` and `@wolfsdk/review`|MIT|
+|The Wolf engine: the `wolf` executable on the server and the `wolf_web` WebAssembly module in the browser|Closed source. Neither is in this repository or in the image.|
+
+The engine is free of charge under the Community Self-Host grant: one workspace with up to five
+signed-in seats, on your own infrastructure, with no licence key. Anything larger needs a
+`WOLF_LICENSE_KEY`.
+
+## Self-hosting
+
+### With Docker
+
+The four commands above are the whole install. The image (`ghcr.io/wolfsdk/workspace:0.1.0`) is
+built for `linux/amd64` and holds only this repository's code. On the first start the container:
+
+- installs the pinned Wolf engine (0.2.25) from `https://wolfsdk.com/install` into the data volume,
+  under the engine's own licence. Later starts reuse it. To use your own `wolf` executable instead,
+  mount it and name it with `WOLF_ENGINE`.
+- creates one user, `Owner`, and prints that user's sign-in address to the log.
+
+Rooms, document blobs, the engine and the actor table (`actors.json`, a map of bearer token to
+actor) live in the `workspace-data` volume. Browsers load the engine's WebAssembly module from
+`https://wolfsdk.com/download/wolf`, so they need to reach that address.
+
+The port binds to `127.0.0.1`. When the container runs on another machine, forward the port and
+open the printed address on your own machine:
+
+```sh
+ssh -N -L 8787:127.0.0.1:8787 user@your-server
+```
+
+Put TLS in front before setting `WOLF_WORKSPACE_BIND=0.0.0.0`, because tokens travel in the clear
+on plain HTTP.
+
+### Add an agent
+
+Everyone who connects, person or agent, is an entry in `actors.json`. To add an agent, write an
+entry with a new token and restart:
+
+```sh
+docker compose exec -T workspace bun -e '
+const file = "/data/actors.json";
+const actors = JSON.parse(await Bun.file(file).text());
+const token = crypto.randomUUID().replaceAll("-", "") + crypto.randomUUID().replaceAll("-", "");
+actors[token] = { kind: "agent", id: "analyst", name: "Analyst", operator: { id: "owner", name: "Owner" } };
+await Bun.write(file, JSON.stringify(actors, null, 2) + "\n");
+console.log(token);
+'
+docker compose restart workspace
+```
+
+The first command prints the agent's token. An agent with an `operator` works on that person's
+seat instead of taking its own. A person is the same kind of entry with `"kind": "user"` and no
+`operator`, and signs in at `http://127.0.0.1:8787/?token=<their token>`.
+
+Point an MCP client at `http://127.0.0.1:8787/mcp?room=<room>` (Streamable HTTP) and send the
+token as `Authorization: Bearer <token>`. To check the connection by hand:
+
+```sh
+curl -s "http://127.0.0.1:8787/mcp?room=<room>" \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"check","version":"0"}}}'
+```
+
+The agent gets eight tools (see [`packages/mcp`](packages/mcp)). What it writes with `doc_edit` in
+`propose` mode waits in the room's Proposals panel until a person approves or rejects it. An agent
+can never approve a proposal.
+
+### Without Docker
+
+With [Bun](https://bun.sh) 1.4 or later on Linux x86-64:
+
+```sh
+curl -fsSL https://wolfsdk.com/install | sh
+mkdir -p blobs
+TOKEN=$(openssl rand -hex 32)
+printf '{"%s": {"kind": "user", "id": "owner", "name": "Owner"}}\n' "$TOKEN" > actors.json
+echo "Sign in at http://127.0.0.1:8787/?token=$TOKEN"
+bunx @wolfsdk/workspace@0.1.0 serve --db rooms.sqlite --blobs blobs --engine ~/.local/bin/wolf --actors actors.json
+```
 
 ## Packages
 
@@ -11,16 +114,17 @@ reimplements format logic.
 |---|---|---|
 |`packages/protocol`|`@wolfsdk/protocol`|The engine contract: request and reply types, operations, workspace room messages, the review session record (`wolfsdk.review-session.v1`), its JSON schema and validators. MIT; no runtime dependencies.|
 |`packages/runtime`|`@wolfsdk/runtime`|The reactor client (worker in the browser, in-process in Node), the engine loader that resolves a module from the release channel and verifies its SHA-256, and the seal helpers. Apache-2.0.|
-|`packages/review`|`@wolfsdk/review`|The `<wolf-review>` element, an auto-registering entry, a React wrapper and the styles. Published to npm under MIT.|
+|`packages/review`|`@wolfsdk/review`|The `<wolf-review>` element that opens a DOCX, XLSX or PPTX, shows it and edits it through the engine, with an auto-registering entry, a React wrapper and the styles. Published to npm under MIT.|
 |`packages/server`|`@wolfsdk/server`|Multi-party workspace rooms, SQLite append-only op log, content-addressed blob store, seat enforcement, and `wolf reactor-serve` worker pool. Apache-2.0.|
 |`packages/mcp`|`@wolfsdk/mcp`|Model Context Protocol server (stdio and Streamable HTTP) exposing the 8 workspace tools and `wolf://workspace/{id}` resource. Apache-2.0.|
 |`packages/packs`|`@wolfsdk/packs`|`pack.wolf.json` freshness check and refresh across DOCX bookmarks/tables and PPTX tables, headlines, and chart series from XLSX, CSV, and SQL snapshots. Apache-2.0.|
 |`packages/workspace-cli`|`@wolfsdk/workspace`|The `wolfsdk-workspace` CLI (`check`, `refresh`, `serve`) over the workspace room server and pack engine. Apache-2.0.|
+|`apps/workspace`|`@wolfsdk/workspace-app`|The browser workspace that `serve` and the container image ship: rooms, documents, the editor, proposals, comments and history. Apache-2.0. Never published on its own; `@wolfsdk/workspace` carries the build.|
 |`apps/playground`|`@wolfsdk/playground`|A local page that mounts the element beside the inspection modes. Never published.|
 
-`@wolfsdk/protocol` and `@wolfsdk/review` are MIT; the root workspace and remaining packages are
-Apache-2.0. `@wolfsdk/review` bundles what it needs from `@wolfsdk/protocol` and `@wolfsdk/runtime`
-and publishes from `packages/review/dist`.
+Nothing here reimplements format logic: the element and the server both call the engine.
+`@wolfsdk/review` bundles what it needs from `@wolfsdk/protocol` and `@wolfsdk/runtime` and
+publishes from `packages/review/dist`.
 
 `@wolfsdk/protocol`, `@wolfsdk/server`, `@wolfsdk/mcp`, `@wolfsdk/packs` and `@wolfsdk/workspace`
 publish to npm as TypeScript source for Bun 1.4 or later; `@wolfsdk/workspace` carries the compiled
@@ -29,32 +133,6 @@ and `SHA256SUMS` to `pack/`; `bun run pack:check` also installs them into an emp
 refuses them unless every export loads, the declarations compile and the CLI starts.
 `@wolfsdk/runtime` is not published on its own: it reaches its worker and the engine module by
 paths of this workspace, and reaches users inside `@wolfsdk/review` and the workspace UI.
-
-## Self-hosting
-
-With Docker, from this directory:
-
-```sh
-docker compose up -d
-docker compose logs workspace     # prints the address to sign in at
-```
-
-The image (`ghcr.io/wolfsdk/workspace`) holds only this repository's open-source code. The Wolf
-engine is closed source: the first start installs the pinned version from
-`https://wolfsdk.com/install` into the data volume, under the engine's own licence, and later
-starts reuse it. To use your own `wolf` executable instead, mount it and name it with `WOLF_ENGINE`.
-The first start also creates one user and prints a sign-in address; rooms, document blobs and the
-actor table (`actors.json`, a map of bearer token to actor) live in the `workspace-data` volume.
-Without `WOLF_LICENSE_KEY` the engine runs under the Community Self-Host grant (1 workspace, up
-to 5 seats). The port binds to `127.0.0.1`; put TLS in front before setting
-`WOLF_WORKSPACE_BIND=0.0.0.0`, because tokens travel in the clear on plain HTTP.
-
-Without Docker, with Bun and the engine installed:
-
-```sh
-curl -fsSL https://wolfsdk.com/install | sh
-bunx @wolfsdk/workspace serve --db rooms.sqlite --blobs blobs --engine ~/.local/bin/wolf --actors actors.json
-```
 
 ## Commands
 
@@ -85,28 +163,25 @@ defaults to the release channel, and its declarations compile in a consumer proj
 `@wolfsdk/review` never bundles the engine. At run time it fetches the module from the release
 channel (`https://wolfsdk.com/download/wolf` by default), or from an exact URL given with its
 SHA-256, and verifies the bytes before compiling them. The module's licence is separate from
-this workspace's MIT licence.
+this workspace's licences.
 
 For local work, put a module at `vendor/wolf_web.wasm`. The directory is ignored by
-Git: a module is tens of megabytes and is never committed or packed. Build one from the
-repository root on a gate host:
+Git: a module is tens of megabytes and is never committed or packed.
 
-```sh
-python3 scripts/build_wolf_web.py --out-dir sdk/web/vendor
-```
 
 The smoke script and the playground's dev server read `vendor/wolf_web.wasm`; the unit tests
 need no module. A module that lacks an optional command answers `unsupported`; the element
 reports the refusal and disables the control that issued it for the rest of the session.
 
-A module built from `main` on 2026-11-13 opens, renders, saves and exports sessions for all
-three formats and applies the engine's Agent API operations (`set`, `replace-text`, `insert`,
-`delete`, `format` and the rest). It refuses the operations the element's editors add on top:
-typing in a DOCX (`splice-text`, `split-paragraph`, `join-paragraph`, `set-list`), moving and
-resizing a PPTX shape, and the XLSX grid operations. They land with
-current Wolf Runtime releases, current Wolf Runtime releases and
-current Wolf Runtime releases; until then those controls report the refusal. The
-smoke script uses one operation per format that a module from `main` accepts.
+The module on the release channel (0.2.25) applies the element's editing operations: typing in
+a DOCX paragraph, typing in a PPTX shape and setting an XLSX cell were run against it on
+2026-11-14. A module built from `main` on 2026-11-13 opens, renders, saves and exports sessions
+for all three formats and applies the engine's Agent API operations (`set`, `replace-text`,
+`insert`, `delete`, `format` and the rest), but still refuses the operations the element's
+editors add on top: typing in a DOCX (`splice-text`, `split-paragraph`, `join-paragraph`,
+`set-list`), moving and resizing a PPTX shape, and the XLSX grid operations. Those controls
+report the refusal. The smoke script uses one operation per format that a module from `main`
+accepts.
 
 ## Fixtures
 
