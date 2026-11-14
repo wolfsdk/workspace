@@ -3,8 +3,11 @@
 # without publishing.
 #
 # The publish job authenticates through the npm trusted publisher for this repository and
-# workflow (environment npm). Before that publisher exists, an NPM_TOKEN repository secret
-# can publish once; delete the secret after the trusted publisher is configured.
+# workflow (environment npm) and publishes directly. A trusted publisher can only be added
+# to a package that already exists, so the first version is bootstrapped with an NPM_TOKEN
+# repository secret: with that secret set, the job stages the version (npm stage publish)
+# and a maintainer approves it with 2FA on npmjs.com. Delete the secret once the trusted
+# publisher is configured.
 name: publish-review
 
 on:
@@ -91,9 +94,12 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           set -euo pipefail
-          npm install --global npm@^11.6.0
+          npm install --global npm@^11.15.0
+          tarball="$PWD/$(awk '{print $2}' SHA256SUMS)"
           if [ -n "${NODE_AUTH_TOKEN:-}" ]; then
             npm config set //registry.npmjs.org/:_authToken "$NODE_AUTH_TOKEN" --location project
+            npm stage publish --provenance --access public --registry https://registry.npmjs.org "$tarball"
+            echo "Staged $tarball; approve it with 2FA under Staged Packages on npmjs.com." >>"$GITHUB_STEP_SUMMARY"
+          else
+            npm publish --provenance --access public --registry https://registry.npmjs.org "$tarball"
           fi
-          tarball=$(awk '{print $2}' SHA256SUMS)
-          npm publish --provenance --access public --registry https://registry.npmjs.org "./$tarball"
