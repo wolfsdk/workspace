@@ -1,6 +1,7 @@
 {
   "name": "@wolfsdk/packs",
-  "version": "0.0.0",
+  "version": "0.1.0",
+  "description": "Check and refresh a Wolf Workspace pack: documents whose tables, headlines and charts follow a spreadsheet",
   "private": true,
   "type": "module",
   "license": "Apache-2.0",

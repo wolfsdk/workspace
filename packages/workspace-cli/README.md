@@ -2,19 +2,24 @@
 
 The `wolfsdk-workspace` command line of Wolf Workspace: check and refresh a pack, serve the
 workspace (browser UI, API, room WebSocket and MCP endpoint) on one port, and list or free its
-seats. Apache-2.0. Private until it is published on purpose. Depends on `@wolfsdk/mcp`,
-`@wolfsdk/packs`, `@wolfsdk/protocol` and `@wolfsdk/server`.
+seats. Apache-2.0. Depends on `@wolfsdk/mcp`, `@wolfsdk/packs`, `@wolfsdk/protocol` and
+`@wolfsdk/server`.
+
+The package is TypeScript source and runs under [Bun](https://bun.sh) 1.4 or later; its `bin` is
+`wolfsdk-workspace`, and the published package carries the compiled browser UI. `serve` needs the
+Wolf engine, which is a separate download under its own licence:
 
 ```sh
-bun packages/workspace-cli/src/cli.ts check   ./quarterly-pack
-bun packages/workspace-cli/src/cli.ts refresh ./quarterly-pack --json
-bun packages/workspace-cli/src/cli.ts serve --db rooms.sqlite --blobs blobs \
-  --engine /path/to/wolf --actors actors.json
-bun packages/workspace-cli/src/cli.ts seats --db rooms.sqlite
-bun packages/workspace-cli/src/cli.ts seats release user alice --db rooms.sqlite
+curl -fsSL https://wolfsdk.com/install | sh        # installs `wolf` into ~/.local/bin
+bunx @wolfsdk/workspace check   ./quarterly-pack
+bunx @wolfsdk/workspace refresh ./quarterly-pack --json
+bunx @wolfsdk/workspace serve --db rooms.sqlite --blobs blobs \
+  --engine ~/.local/bin/wolf --actors actors.json
+bunx @wolfsdk/workspace seats --db rooms.sqlite
+bunx @wolfsdk/workspace seats release user alice --db rooms.sqlite
 ```
 
-The package's `bin` is `wolfsdk-workspace` and runs under Bun.
+From a checkout of this repository, the same commands are `bun packages/workspace-cli/src/cli.ts ...`.
 
 ## check and refresh
 
@@ -50,7 +55,7 @@ workers (default 2). The rooms, the MCP tools (`doc_read` text and markdown view
 
 |Route|What answers|
 |---|---|
-|`GET /`, any app route, `/assets/*`|The compiled workspace UI (`--static-dir`, default `apps/workspace/dist` of this checkout when built). A path that would leave the directory is a 404.|
+|`GET /`, any app route, `/assets/*`|The compiled workspace UI (`--static-dir`; by default the UI packed with the package, else `apps/workspace/dist` of a checkout when built). A path that would leave the directory is a 404.|
 |`WS /ws`|`wolfsdk.room.v1`: `room.join`, `doc.edit`, `proposal.decide`, `comment.post`. The same contract and order guarantees as `startWsServer` of `@wolfsdk/server`.|
 |`POST`, `GET`, `DELETE /mcp`|MCP over Streamable HTTP, for agents only. The room is `?room=<id>` or `X-Wolf-Room`, else `--default-room`, else the only room.|
 |`GET /api/health`|`{ "ok": true }`, without a token.|
@@ -60,7 +65,7 @@ workers (default 2). The rooms, the MCP tools (`doc_read` text and markdown view
 |`POST /api/rooms/<room>/docs`|Add a document: the raw bytes with `?name=<file>` (and `?format=` when the extension does not say it), or `multipart/form-data` with a `file` field.|
 |`GET /api/rooms/<room>/docs/<doc>/head`|The head bytes, with `ETag: "sha256:<hex>"`, `X-Wolf-Revision` and `X-Wolf-Sha256`. `If-None-Match` answers 304.|
 |`GET /api/rooms/<room>/proposals/<id>/preview`|The preview bytes of a proposal, with `X-Wolf-Sha256`.|
-|`GET /api/pack`, `POST /api/pack/refresh`|Check or refresh the pack of `--pack <dir>`; `404 { "error": { "code": "NO_PACK" } }` without one.|
+|`GET /api/pack`, `POST /api/pack/refresh`|Check or refresh the pack of `--pack <dir>` on disk; `404 { "error": { "code": "NO_PACK" } }` without one.|
 |`GET /wasm/*`|A local engine channel (`latest.txt`, `v<VERSION>/wolf_web.wasm`, fonts) from `--wasm-dir`, with CORS.|
 
 An API failure is `{ "error": { "code", "message" } }` with the status of its code (`UNKNOWN_*`
@@ -68,6 +73,30 @@ An API failure is `{ "error": { "code", "message" } }` with the status of its co
 `ENGINE_FAILED` 503, otherwise 400). `--default-room <id>` creates that room at start, as the
 first user of the actors file, in `--workspace-id` (default `default`) when it does not exist.
 `--workspace-id` is also the workspace of a room created through the API without one.
+
+To seat an agent harness, give it the MCP address and the agent's token. For Claude Code:
+
+```json
+{
+  "mcpServers": {
+    "wolf-workspace": {
+      "type": "http",
+      "url": "http://127.0.0.1:8787/mcp?room=<room>",
+      "headers": { "Authorization": "Bearer <agent token>" }
+    }
+  }
+}
+```
+
+Name the server anything except `workspace`: Claude Code reserves that name and skips the entry
+with a warning. The agent starts with `workspace_list`, which names the documents, the open
+proposals, the packs, and every open comment thread with its `thread_id` and messages.
+
+With `--pack <dir>`, the MCP tool `pack_link_refresh` refreshes that pack into the documents of
+the agent's room: one proposal (or commit) per stale target document, never a write to the pack
+directory. The manifest is read from the directory on every call. A source is read from the room
+when the room holds a document of that name, and from the directory otherwise. `workspace_list`
+names the pack and its bindings.
 
 The same server is a library: `startWorkspaceServer({ service, authenticate, ... })`.
 

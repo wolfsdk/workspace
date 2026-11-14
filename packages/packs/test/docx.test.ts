@@ -63,11 +63,12 @@ describe("a table", () => {
     const before = docx({ table: [["Quarter", "Revenue"], ["Q1", "old"]] });
     const doc = new DocxDocument(before, "report.docx");
     const planned = doc.planTable(table("Revenue", "grow"), [...FIGURES, ["Q3", "$0.9M"], ["Q4", "$1.1M"]]);
+    // Every anchor is a row the document has before the batch: an engine resolves all of them up front.
     expect(planned.ops.map((op) => [op.op, op.anchor ?? op.target])).toEqual([
       ["set", "table:Revenue/row:@2/cell:@2"],
       ["insert-row", "table:Revenue/row:@2"],
-      ["insert-row", "table:Revenue/row:@3"],
-      ["insert-row", "table:Revenue/row:@4"],
+      ["insert-row", "table:Revenue/row:@2"],
+      ["insert-row", "table:Revenue/row:@2"],
     ]);
     expect(planned.notes.join(" ")).toContain("grows by 3 rows");
     const after = applied(before, planned.ops);

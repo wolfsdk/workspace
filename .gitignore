@@ -9,6 +9,6 @@ pack/
 # at the repository root or copy one in. See README.md.
 vendor/
 
-# Local compose.yaml runtime room directory and actor token table.
+# Room data and an actor token table of a `serve` run from this directory.
 data/
 actors.json

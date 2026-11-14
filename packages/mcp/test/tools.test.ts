@@ -44,6 +44,19 @@ describe("workspace_list", () => {
     expect(data.seq).toBeGreaterThan(0);
   });
 
+  test("shows each open thread with what was said, so the agent can answer it by id", async () => {
+    const { workspace, session } = await setup();
+    must(
+      await workspace.room.postComment("room", alice, { thread_id: null, doc_name: "brief.docx", target_address: "para:@2", body: "Source?", mentions: [] }),
+    );
+    const [thread] = dataOf(await callTool(session, "workspace_list")).threads as { thread_id: string; messages: { author: string; body: string }[] }[];
+    expect(thread).toMatchObject({ doc_name: "brief.docx", target_address: "para:@2", mentions: [] });
+    expect(thread?.messages.map(({ author, body }) => ({ author, body }))).toEqual([{ author: alice.id, body: "Source?" }]);
+    const reply = await callTool(session, "comment_reply", { thread_id: thread?.thread_id, body: "The Q3 ledger.", resolve: true });
+    expect(reply.isError).toBeFalsy();
+    expect(dataOf(await callTool(session, "workspace_list")).threads).toEqual([]);
+  });
+
   test("filters by format and cuts at the limit", async () => {
     const { session } = await setup();
     const sheets = dataOf(await callTool(session, "workspace_list", { format: "xlsx" }));

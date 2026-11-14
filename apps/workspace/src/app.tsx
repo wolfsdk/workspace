@@ -302,7 +302,7 @@ function Workspace({ api, token, actor, switchingToken, onSwitchToken, onSignIn,
     setDeciding(proposal.proposal_id);
     try {
       await room.client.request({ type: "proposal.decide", proposal_id: proposal.proposal_id, decision }, (event) =>
-        isDecided(event, proposal.proposal_id),
+        isDecided(event, proposal.proposal_id, decision),
       );
       notify(decision === "approve" ? "success" : "info", `${decision === "approve" ? "Approved" : "Rejected"} ${proposal.proposal_id}.`);
       setFocusId((current) => (current === proposal.proposal_id ? null : current));

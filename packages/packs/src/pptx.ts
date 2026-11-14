@@ -262,9 +262,10 @@ export class PptxDocument {
         if (cell !== undefined && this.bodyText(shape.parsed, cell) !== text) ops.push({ op: "set", target: `${base}/row:@${r + 1}/cell:@${c + 1}`, value: { text } });
       }
     }
-    // Each new row follows the one before it: a batch applied in order puts the rows in the order of the source.
-    for (let r = cells.length; r < cells.length + fit.growRows; r++) {
-      ops.push({ op: "insert-row", anchor: `${base}/row:@${r}`, position: "after", cells: paddedRow(texts[r] ?? [], width) });
+    // The engine resolves every anchor against the deck as it is before the batch and puts each row straight after
+    // its anchor, so the new rows all anchor on the last row the table has, the last of them first.
+    for (let r = cells.length + fit.growRows - 1; r >= cells.length; r--) {
+      ops.push({ op: "insert-row", anchor: `${base}/row:@${cells.length}`, position: "after", cells: paddedRow(texts[r] ?? [], width) });
     }
     return { ops, notes: fit.notes };
   }
@@ -335,14 +336,13 @@ export class PptxDocument {
 
   // Applying ---------------------------------------------------------------------------------------------
 
-  /** Write `ops`, as the planners made them, into the deck. Every address resolves against the deck as it is now,
-   * except that an `insert-row` after the last row, or after the row the op before it appended, appends one more
-   * row; nothing is written when any op is refused. The deck is spent after one `apply`: open `save()` again to
-   * read what it wrote. */
+  /** Write `ops`, as the planners made them, into the deck. Every address resolves against the deck as it is before
+   * the batch, the way the engine resolves a batch: a row inserted after a row lands straight after it, ahead of
+   * the rows earlier ops inserted there. Nothing is written when any op is refused. The deck is spent after one
+   * `apply`: open `save()` again to read what it wrote. */
   apply(ops: readonly RoomOp[]): void {
     const cache: Cache = new Map();
     const splices = new Map<string, Splice[]>();
-    const appended = new Map<XNode, number>();
     const add = (part: string, more: Splice[]): void => {
       splices.set(part, [...(splices.get(part) ?? []), ...more]);
     };
@@ -388,19 +388,14 @@ export class PptxDocument {
         change.points.set(address.point - 1, number);
       } else if (op.op === "insert-row" && Array.isArray(op.cells) && (op.position === "before" || op.position === "after") && address.row !== null) {
         const { rows, cells } = this.tableOf(shape, target);
-        const table = shape.node;
-        const made = appended.get(table) ?? 0;
-        const atTail = op.position === "after" && address.row === rows.length + made;
-        const at = atTail ? rows.length : address.row;
-        const row = rows[at - 1];
-        const anchorCells = cells[at - 1];
+        const row = rows[address.row - 1];
+        const anchorCells = cells[address.row - 1];
         const given: unknown[] = op.cells;
         if (row === undefined || anchorCells === undefined) throw new PackError("address-unresolved", `${this.name} has no ${JSON.stringify(target)}`);
         if (given.length !== anchorCells.length || !given.every((t) => typeof t === "string")) {
           throw new PackError("table-row-width-mismatch", `an insert-row of ${this.name} has ${given.length} cells, the anchor row has ${anchorCells.length}`);
         }
         add(shape.parsed.part, [this.rowClone(shape.parsed, row, anchorCells, given.map(String), op.position, order)]);
-        if (atTail) appended.set(table, made + 1);
       } else {
         throw new PackError("unsupported-op", `${this.name}: a pack applies set on a table cell, headline or chart point, format of a size and insert-row, not ${JSON.stringify(op).slice(0, 120)}`);
       }
@@ -481,7 +476,7 @@ export class PptxDocument {
     const cellSplices = cells.flatMap((cell, i) => this.cellSplices(parsed, cell, texts[i] ?? "", order).map((s) => ({ ...s, start: s.start - row.start, end: s.end - row.start })));
     const identity = new RegExp(`<${a("extLst")}>[\\s\\S]*?</${a("extLst")}>`, "g");
     const clone = applySplices(parsed.src.slice(row.start, row.end), cellSplices, parsed.part).replace(identity, "");
-    const at = position === "after" ? row.end : row.start;
-    return { start: at, end: at, text: clone, order };
+    // After a row, a later op lands nearer the row than an earlier one; before a row, the later op is nearer too.
+    return position === "after" ? { start: row.end, end: row.end, text: clone, order: -order } : { start: row.start, end: row.start, text: clone, order };
   }
 }

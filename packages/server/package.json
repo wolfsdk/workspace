@@ -1,6 +1,7 @@
 {
   "name": "@wolfsdk/server",
-  "version": "0.0.0",
+  "version": "0.1.0",
+  "description": "The Wolf Workspace room server: multi-party rooms, proposals, an append-only log and pooled engine workers",
   "private": true,
   "type": "module",
   "license": "Apache-2.0",

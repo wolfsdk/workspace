@@ -13,7 +13,7 @@
   "x-wolfsdk-tools": [
     {
       "name": "workspace_list",
-      "description": "List the workspace's documents, packs and open proposals. Start here: each document shows its format, head revision and sha256.",
+      "description": "List the workspace's documents, packs, open proposals and open comment threads. Start here: each document shows its format, head revision and sha256; each thread shows its thread_id, anchor and messages.",
       "inputSchema": {
         "type": "object",
         "additionalProperties": false,
@@ -79,7 +79,7 @@
           "doc": {"type": "string", "minLength": 1},
           "base_revision": {"type": "integer", "minimum": 0, "description": "Revision the ops were written against, from doc_read."},
           "mode": {"enum": ["propose", "commit"]},
-          "ops": {"type": "array", "minItems": 1, "items": {"type": "object", "required": ["op"], "properties": {"op": {"type": "string", "minLength": 1}}}, "description": "Agent API operations."},
+          "ops": {"type": "array", "minItems": 1, "items": {"type": "object", "required": ["op"], "properties": {"op": {"type": "string", "minLength": 1}}}, "description": "Agent API operations, e.g. {\"op\":\"set\",\"target\":\"para:@1\",\"value\":{\"text\":\"New text\"}}."},
           "message": {"type": "string", "description": "Why, shown to reviewers."}
         }
       }
@@ -116,7 +116,7 @@
     },
     {
       "name": "comment_reply",
-      "description": "Reply to a comment thread. Mention people or agents with @id in body.",
+      "description": "Reply to an open comment thread; thread_id comes from workspace_list. Mention people or agents with @id in body.",
       "inputSchema": {
         "type": "object",
         "additionalProperties": false,

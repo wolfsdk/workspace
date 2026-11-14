@@ -93,6 +93,16 @@ describe("replay", () => {
     const result = await engine.replay(input("one\ftwo", [], true, true));
     expect(result.page_hashes).toEqual(["one", "two"].map((page) => sha256(bytesOf(page))));
   });
+
+  test("a document with no layout is still edited when pages are asked for; it has no page hashes", async () => {
+    const { engine } = engineOn();
+    const result = await engine.replay(input("~nolayout a", [append("b"), append("c")], true, true));
+    expect(textOf(result.bytes ?? new Uint8Array())).toBe("~nolayout abc");
+    expect(result.page_hashes).toBeNull();
+    // An op the engine does not support is refused with or without pages.
+    const refusal = await failureOf(engine.replay({ ...input("x", [append("y")], true, true), format: "pdf", name: "doc.pdf" }), EngineRefusal);
+    expect([refusal.code, refusal.cmd]).toEqual(["unsupported", "apply"]);
+  });
 });
 
 describe("what the engine refuses", () => {

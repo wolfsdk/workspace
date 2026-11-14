@@ -273,6 +273,18 @@ describe("proposals", () => {
     log.expectValid();
   });
 
+  test("a document the engine edits but cannot lay out still takes an approval and a commit", async () => {
+    await seedRoom(h, "~nolayout deck");
+    const proposal = proposed(await edit("propose", 0, append("!"), robot));
+    const outcome = must(await decide(proposal.proposal_id, "approve"));
+    expect(outcome.proposal.status).toBe("approved");
+    expect(outcome.head).toMatchObject({ revision: 1, sha256: proposal.preview_sha256 });
+    must(await edit("commit", 1, append("?")));
+    const read = must(await h.server.readHead("room", alice, DOC));
+    expect(textOf(read.bytes)).toBe("~nolayout deck!?");
+    expect(read.page_hashes).toBeUndefined();
+  });
+
   test("a proposal is decided once: a second decision is PROPOSAL_NOT_OPEN, an unknown id UNKNOWN_PROPOSAL", async () => {
     await seedRoom(h);
     const approved = proposed(await edit("propose", 0, append("!"), robot));

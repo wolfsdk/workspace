@@ -136,6 +136,8 @@ let nextDoc = 1;
 const pagesOf = (text: string): string[] => text.split("\f").map((page) => sha256(encoder.encode(page)));
 
 const DETERMINISM = { clock: "2026-01-01T00:00:00Z", timezone: "UTC", locale: "en-US", seed: 0 };
+/** A document whose text starts with this is edited but never laid out, like a deck with no slide layout. */
+const NO_LAYOUT = "~nolayout";
 
 type Op = { op: string; text?: string; find?: string; message?: string; path?: string; code?: string };
 
@@ -212,6 +214,7 @@ async function handle(frame: InFrame): Promise<void> {
       const doc = request.doc;
       const held = docs.get(doc);
       if (!held) return respond(reqId, refuse("layout", "unknown-doc", `no document ${doc}`, "doc"));
+      if (held.text.startsWith(NO_LAYOUT)) return respond(reqId, refuse("layout", "unsupported", "this document has no layout", "doc"));
       return respond(reqId, {
         cmd: "layout",
         ok: true,
@@ -311,6 +314,9 @@ async function apply(reqId: number, request: Extract<ReactorPipeRequest, { cmd: 
   held.text = text;
   held.revision += 1;
   held.pages = pagesOf(text);
+  // A document the engine edits but cannot lay out. Like wolf 0.2.25, the fake has changed the document by the
+  // time it refuses the relayout, so the handle is no longer at the base the caller thinks it is.
+  if (request.relayout === true && text.startsWith(NO_LAYOUT)) return respond(reqId, refuse("apply", "unsupported", "this document has no layout", "doc"));
   const response: Record<string, unknown> = {
     cmd: "apply",
     ok: true,

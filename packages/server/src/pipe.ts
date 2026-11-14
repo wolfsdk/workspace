@@ -76,9 +76,16 @@ class ByteQueue {
   }
 }
 
+/** What a frame reader uses of a stream reader. Named here because the type libraries of Bun, Node and the
+ * DOM disagree on the rest, and a consumer's compiler checks this source against whichever it has. */
+type ByteReader = {
+  read(): Promise<{ done: false; value: Uint8Array } | { done: true; value?: Uint8Array }>;
+  cancel(): Promise<void>;
+};
+
 /** Decodes frames from a byte stream. */
 export class FrameReader {
-  private readonly reader: ReadableStreamDefaultReader<Uint8Array>;
+  private readonly reader: ByteReader;
   private readonly queue = new ByteQueue();
   private readonly maxSegmentBytes: number;
   private ended = false;

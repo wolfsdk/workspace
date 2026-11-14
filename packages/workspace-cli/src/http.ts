@@ -27,6 +27,7 @@ import {
   type WorkspaceDocFormat,
 } from "@wolfsdk/protocol/workspace";
 import { type DocumentEngine, EngineFault, EngineRefusal, type Result, type RoomFailure, type RoomService, type RoomSubscription } from "@wolfsdk/server";
+import { directoryPackRefresher } from "./pack-refresher.ts";
 
 export type Authenticate = (request: Request) => RoomActor | null | Promise<RoomActor | null>;
 
@@ -59,7 +60,8 @@ export type WorkspaceServerOptions = {
   snapshot?: (input: SnapshotInput) => Promise<unknown[]>;
   /** The engine hooks of the MCP tools (`inspector`, `renderer`, `packs`). The MCP endpoint is always on. */
   mcp?: Omit<WorkspaceToolsOptions, "service" | "roomId">;
-  /** The pack `GET /api/pack` checks and `POST /api/pack/refresh` refreshes. */
+  /** The pack `GET /api/pack` checks and `POST /api/pack/refresh` refreshes on disk, and the pack the MCP tool
+   * `pack_link_refresh` refreshes into the documents of a room unless `mcp.packs` says otherwise. */
   pack?: WorkspacePackOptions | null;
   /** The room `/mcp` attaches to when the request names none. */
   defaultRoom?: string | null;
@@ -209,6 +211,8 @@ export function startWorkspaceServer(options: WorkspaceServerOptions): Workspace
   const staticDir = options.staticDir ? resolve(options.staticDir) : null;
   const wasmDir = options.wasmDir ? resolve(options.wasmDir) : null;
   const mcpHandlers = new Map<string, McpHttpHandler>();
+  // The linked pack is also what `pack_link_refresh` refreshes, into the documents of the agent's room.
+  const linkedPacks = options.mcp?.packs ?? (options.pack ? directoryPackRefresher({ dir: options.pack.dir, evaluator: options.pack.evaluator }) : undefined);
   /** Pack refreshes write files: one at a time. */
   let packQueue: Promise<unknown> = Promise.resolve();
 
@@ -318,7 +322,7 @@ export function startWorkspaceServer(options: WorkspaceServerOptions): Workspace
   function mcpHandlerFor(roomId: string): McpHttpHandler {
     let handler = mcpHandlers.get(roomId);
     if (!handler) {
-      const server = new McpServer({ ...options.mcp, service, roomId, actor: MCP_PLACEHOLDER });
+      const server = new McpServer({ ...options.mcp, packs: linkedPacks, service, roomId, actor: MCP_PLACEHOLDER });
       handler = createMcpHttpHandler({ server, authenticate });
       mcpHandlers.set(roomId, handler);
     }
@@ -370,12 +374,8 @@ export function startWorkspaceServer(options: WorkspaceServerOptions): Workspace
     let format: string | null = url.searchParams.get("format");
     let bytes: Uint8Array;
     if ((request.headers.get("content-type") ?? "").toLowerCase().startsWith("multipart/form-data")) {
-      let form: FormData;
-      try {
-        form = await request.formData();
-      } catch {
-        return problem(400, "BAD_REQUEST", "the multipart body does not parse");
-      }
+      const form = await request.formData().catch(() => null);
+      if (form === null) return problem(400, "BAD_REQUEST", "the multipart body does not parse");
       const file = form.get("file");
       if (!(file instanceof Blob)) return problem(400, "BAD_REQUEST", "send the document as the form field file");
       const fieldName = form.get("name");

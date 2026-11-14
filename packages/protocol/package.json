@@ -1,6 +1,7 @@
 {
   "name": "@wolfsdk/protocol",
-  "version": "0.0.0",
+  "version": "0.1.0",
+  "description": "The Wolf engine and Workspace contracts: request and reply types, room messages, JSON schemas and validators",
   "private": true,
   "type": "module",
   "sideEffects": false,

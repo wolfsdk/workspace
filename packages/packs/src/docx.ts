@@ -206,11 +206,11 @@ export class DocxDocument {
         if (cell !== undefined && this.cellText(cell) !== text) ops.push({ op: "set", target: `table:${table.reference}/row:@${r + 1}/cell:@${c + 1}`, value: { text } });
       }
     }
-    // Each new row follows the one before it: a batch applied in order puts the rows in the order of the source.
+    // Every new row anchors on the last row the table has now, in the order of the source.
     for (let r = table.rows.length; r < table.rows.length + fit.growRows; r++) {
       ops.push({
         op: "insert-row",
-        anchor: `table:${table.reference}/row:@${r}`,
+        anchor: `table:${table.reference}/row:@${table.rows.length}`,
         position: "after",
         cells: paddedRow(texts[r] ?? [], table.rows[0]?.length ?? 0),
       });
@@ -239,12 +239,11 @@ export class DocxDocument {
   // Applying ---------------------------------------------------------------------------------------------
 
   /** Write `ops`, as `planTable` and `planBookmark` made them, into the document. Every address resolves against
-   * the document as it is now, except that an `insert-row` after the last row, or after the row the op before it
-   * appended, appends one more row; nothing is written when any op is refused. The document is spent after one
+   * the document as it is before the batch, the way the engine resolves a batch: rows inserted after one row follow
+   * it in the order of their ops. Nothing is written when any op is refused. The document is spent after one
    * `apply`: open `save()` again to read what it wrote. */
   apply(ops: readonly RoomOp[]): void {
     const splices: Splice[] = [];
-    const appended = new Map<string, number>();
     ops.forEach((op, order) => {
       const target = typeof op.target === "string" ? op.target : "";
       const text = typeof op.value === "object" && op.value !== null && "text" in op.value && typeof op.value.text === "string" ? op.value.text : undefined;
@@ -254,13 +253,12 @@ export class DocxDocument {
         const { cell } = this.cellAt(target);
         splices.push(...this.cellSplices(cell, text, order));
       } else if (op.op === "insert-row" && typeof op.anchor === "string" && Array.isArray(op.cells) && (op.position === "before" || op.position === "after")) {
-        const { rowNode, cells, tail } = this.anchorRow(op.anchor, op.position, appended);
+        const { rowNode, cells } = this.anchorRow(op.anchor);
         const cellTexts: unknown[] = op.cells;
         if (cellTexts.length > cells.length || !cellTexts.every((t) => typeof t === "string")) {
           throw new PackError("table-row-width-mismatch", `an insert-row of ${this.name} has ${cellTexts.length} cells, the anchor row has ${cells.length}`);
         }
         splices.push(this.rowClone(rowNode, cells, cellTexts.map(String), op.position, order));
-        if (tail !== null) appended.set(tail, (appended.get(tail) ?? 0) + 1);
       } else {
         throw new PackError("unsupported-op", `${this.name}: a pack applies set on a table cell or a bookmark and insert-row on a table, not ${JSON.stringify(op).slice(0, 120)}`);
       }
@@ -268,15 +266,10 @@ export class DocxDocument {
     if (splices.length > 0) this.pkg.setText(this.part, applySplices(this.src, splices, this.part));
   }
 
-  /** The row an `insert-row` anchors on; `tail` is the table the insert appends a row to, when it is after the last
-   * row or after a row this batch appended (the row then cloned is the last one the table has). */
-  private anchorRow(anchor: string, position: string, appended: ReadonlyMap<string, number>): { rowNode: XNode; cells: XNode[]; tail: string | null } {
-    const m = /^(table:.+?)\/row:@(\d+)$/.exec(anchor);
-    if (m === null) throw new PackError("address-unresolved", `${JSON.stringify(anchor)} is not a table row address of the form table:<caption | @n>/row:@r`);
-    const table = this.table(m[1] ?? "");
-    const atTail = position === "after" && Number(m[2]) === table.rows.length + (appended.get(table.reference) ?? 0);
-    const { rowNode, cells } = this.cellAt(`${m[1]}/row:@${atTail ? table.rows.length : m[2]}/cell:@1`);
-    return { rowNode, cells, tail: atTail ? table.reference : null };
+  /** The row an `insert-row` anchors on. */
+  private anchorRow(anchor: string): { rowNode: XNode; cells: XNode[] } {
+    if (!/^table:.+?\/row:@\d+$/.test(anchor)) throw new PackError("address-unresolved", `${JSON.stringify(anchor)} is not a table row address of the form table:<caption | @n>/row:@r`);
+    return this.cellAt(`${anchor}/cell:@1`);
   }
 
   private cellAt(address: string): { cell: XNode; rowNode: XNode; cells: XNode[] } {

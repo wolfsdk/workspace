@@ -12,4 +12,5 @@ export {
   type WorkspaceServer,
   type WorkspaceServerOptions,
 } from "./http.ts";
+export { directoryPackRefresher, type DirectoryPackRefresherOptions } from "./pack-refresher.ts";
 export { EXIT_ERROR, EXIT_FRESH, EXIT_STALE, runCli, type CliIo } from "./run.ts";

@@ -21,6 +21,10 @@ in a document:
 |`pptx_chart_series`|`slide:@N/shape:<name>/chart/series:<name or @N>`|`none`, `fail`|
 |`pptx_fit_headline`|`slide:@N/shape:<name>`|`none`, `shrink_to_fit`, `truncate`, `fail`|
 
+In a room (`wolfsdk-workspace serve`), the engine applies a refresh. Wolf 0.2.25 refuses a
+`docx_bookmark` target there (`unsupported: DOCX set is not supported on bookmark`), and a refresh
+of a whole pack stops at the first refused binding.
+
 A value is formatted the way the source cell is displayed (its number format, the source's
 locale, its 1900 or 1904 date base) unless the binding names its own `number_format`. A
 snapshot source names the SHA-256 of its snapshot; a snapshot with other bytes refuses the

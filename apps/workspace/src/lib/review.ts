@@ -54,9 +54,12 @@ export const isOwnNewProposal = (event: RoomServerEvent, actorId: string, doc: s
   event.proposal.status === "open" &&
   !known.has(event.proposal.proposal_id);
 
-/** Whether `event` closes `proposalId` (approved, rejected, or no longer open for any reason). */
-export const isDecided = (event: RoomServerEvent, proposalId: string): boolean =>
-  event.type === "proposal.updated" && event.proposal.proposal_id === proposalId && event.proposal.status !== "open";
+/** Whether `event` is `proposalId` taking `decision`. A proposal that leaves open another way (an approval the
+ * engine refuses makes it `conflicted`) is not the decision: the server's `error` follows and fails the request. */
+export const isDecided = (event: RoomServerEvent, proposalId: string, decision: "approve" | "reject"): boolean =>
+  event.type === "proposal.updated" &&
+  event.proposal.proposal_id === proposalId &&
+  event.proposal.status === (decision === "approve" ? "approved" : "rejected");
 
 /** Whether a room activity event is about `doc` (or the whole room), and so belongs on its presence bar. */
 export const isActivityFor = (event: RoomServerEvent, doc: string): boolean => event.type === "agent.activity" && (event.doc_name === null || event.doc_name === doc);

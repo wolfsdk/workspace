@@ -1,6 +1,6 @@
 {
   "name": "@wolfsdk/mcp",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "The compact MCP server of Wolf Workspace: eight tools over a room, Streamable HTTP and stdio",
   "private": true,
   "type": "module",

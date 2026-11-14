@@ -56,11 +56,12 @@ describe("a table", () => {
     const before = pptx({ table: [["Quarter", "Revenue"], ["Q1", "old"]] });
     const wanted = [...FIGURES, ["Q3", "$0.9M"], ["Q4", "$1.1M"]];
     const planned = new PptxDocument(before, "deck.pptx").planTable(at(TABLE, "grow"), wanted);
+    // Every anchor is a row the deck has before the batch: an engine resolves all of them up front.
     expect(planned.ops.map((op) => [op.op, op.anchor ?? op.target])).toEqual([
       ["set", "slide:#256/shape:#3/row:@2/cell:@2"],
       ["insert-row", "slide:#256/shape:#3/row:@2"],
-      ["insert-row", "slide:#256/shape:#3/row:@3"],
-      ["insert-row", "slide:#256/shape:#3/row:@4"],
+      ["insert-row", "slide:#256/shape:#3/row:@2"],
+      ["insert-row", "slide:#256/shape:#3/row:@2"],
     ]);
     const after = applied(before, planned.ops);
     const xml = partText(after, "ppt/slides/slide1.xml");

@@ -324,6 +324,13 @@ export class WorkspaceTools {
         created_at: proposal.created_at,
         ops: proposal.batches.reduce((sum, batch) => sum + batch.ops.length, 0),
       })),
+      threads: openThreads.map((thread) => ({
+        thread_id: thread.thread_id,
+        doc_name: thread.doc_name,
+        target_address: thread.target_address,
+        mentions: thread.mentions.map((mention) => mention.id),
+        messages: thread.messages.map((message) => ({ author: message.author.id, body: message.body, created_at: message.created_at })),
+      })),
       packs: this.#packs?.listPacks ? await this.#packs.listPacks() : [],
     };
     return okResult(data);

@@ -102,7 +102,20 @@ export class PoolEngine implements DocumentEngine {
     return this.pool.withWorker((worker) => this.replayOn(worker, input));
   }
 
+  /** Replay with the pages asked for. An `unsupported` refusal of a relayout apply is either an op the engine does
+   * not support or a document it edits but cannot lay out. The same replay without pages tells them apart: it
+   * refuses the first again, and for the second the document simply has no page hashes. It runs on a fresh
+   * handle, because the engine may have changed the document before it refused the relayout. */
   private async replayOn(worker: EngineWorker, input: ReplayInput): Promise<ReplayResult> {
+    try {
+      return await this.replayOnce(worker, input);
+    } catch (e) {
+      if (!input.pages || !(e instanceof EngineRefusal) || e.code !== "unsupported" || e.cmd !== "apply") throw e;
+      return this.replayOnce(worker, { ...input, pages: false });
+    }
+  }
+
+  private async replayOnce(worker: EngineWorker, input: ReplayInput): Promise<ReplayResult> {
     const inputSha = sha256Hex(input.bytes);
     const opened = await ask(
       worker,

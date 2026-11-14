@@ -198,8 +198,19 @@ function EditorStage(props: StageProps) {
         element.agentActivities = [];
         for (const item of presenceFor(latest.current.activity, docName)) element.applyRoomActivityEvent(item as RoomActivityEvent);
       } catch (e) {
+        if (cancelled) return;
         // The element shows its own refusals and engine failures (with a Retry); the stage reports the server's.
-        if (!cancelled && e instanceof ApiError) setLoadError(e.message);
+        if (e instanceof ApiError) setLoadError(e.message);
+        // What the element still holds is the document it had before: close it rather than leave another
+        // document's pages, revision and hash under this one's name. Closing drops the element's own error, so
+        // the stage says why this document is not shown.
+        if (openedRef.current !== null && openedRef.current.doc !== docName) {
+          if (openedRef.current.mode !== "pdf") await element.close().catch(() => undefined);
+          openedRef.current = null;
+          setOpened(null);
+          setLocalChanges(0);
+          if (!(e instanceof ApiError)) setLoadError(e instanceof Error ? e.message : String(e));
+        }
       } finally {
         if (!cancelled) setLoading(false);
       }

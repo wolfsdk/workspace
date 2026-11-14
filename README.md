@@ -22,6 +22,40 @@ reimplements format logic.
 Apache-2.0. `@wolfsdk/review` bundles what it needs from `@wolfsdk/protocol` and `@wolfsdk/runtime`
 and publishes from `packages/review/dist`.
 
+`@wolfsdk/protocol`, `@wolfsdk/server`, `@wolfsdk/mcp`, `@wolfsdk/packs` and `@wolfsdk/workspace`
+publish to npm as TypeScript source for Bun 1.4 or later; `@wolfsdk/workspace` carries the compiled
+browser UI. `bun run pack` stages each of the five with its publish manifest and writes the tarballs
+and `SHA256SUMS` to `pack/`; `bun run pack:check` also installs them into an empty project and
+refuses them unless every export loads, the declarations compile and the CLI starts.
+`@wolfsdk/runtime` is not published on its own: it reaches its worker and the engine module by
+paths of this workspace, and reaches users inside `@wolfsdk/review` and the workspace UI.
+
+## Self-hosting
+
+With Docker, from this directory:
+
+```sh
+docker compose up -d
+docker compose logs workspace     # prints the address to sign in at
+```
+
+The image (`ghcr.io/wolfsdk/workspace`) holds only this repository's open-source code. The Wolf
+engine is closed source: the first start installs the pinned version from
+`https://wolfsdk.com/install` into the data volume, under the engine's own licence, and later
+starts reuse it. To use your own `wolf` executable instead, mount it and name it with `WOLF_ENGINE`.
+The first start also creates one user and prints a sign-in address; rooms, document blobs and the
+actor table (`actors.json`, a map of bearer token to actor) live in the `workspace-data` volume.
+Without `WOLF_LICENSE_KEY` the engine runs under the Community Self-Host grant (1 workspace, up
+to 5 seats). The port binds to `127.0.0.1`; put TLS in front before setting
+`WOLF_WORKSPACE_BIND=0.0.0.0`, because tokens travel in the clear on plain HTTP.
+
+Without Docker, with Bun and the engine installed:
+
+```sh
+curl -fsSL https://wolfsdk.com/install | sh
+bunx @wolfsdk/workspace serve --db rooms.sqlite --blobs blobs --engine ~/.local/bin/wolf --actors actors.json
+```
+
 ## Commands
 
 Run from the repository root with [Bun](https://bun.sh) 1.4 or later.

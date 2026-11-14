@@ -69,10 +69,15 @@ describe("event matchers", () => {
     expect(isOwnNewProposal(event, SCOUT.id, "memo.docx", new Set())).toBe(false);
   });
 
-  test("isDecided wants the proposal leaving open", () => {
-    expect(isDecided({ type: "proposal.updated", seq: 7, proposal: proposal("p1", "memo.docx", { status: "approved" }) }, "p1")).toBe(true);
-    expect(isDecided({ type: "proposal.updated", seq: 7, proposal: proposal("p1", "memo.docx") }, "p1")).toBe(false);
-    expect(isDecided({ type: "proposal.updated", seq: 7, proposal: proposal("p2", "memo.docx", { status: "rejected" }) }, "p1")).toBe(false);
+  test("isDecided wants the proposal taking the decision that was asked", () => {
+    const updated = (id: string, status?: "approved" | "rejected" | "conflicted") =>
+      ({ type: "proposal.updated", seq: 7, proposal: proposal(id, "memo.docx", status ? { status } : {}) }) as const;
+    expect(isDecided(updated("p1", "approved"), "p1", "approve")).toBe(true);
+    expect(isDecided(updated("p1", "rejected"), "p1", "reject")).toBe(true);
+    expect(isDecided(updated("p1"), "p1", "approve")).toBe(false);
+    expect(isDecided(updated("p2", "rejected"), "p1", "reject")).toBe(false);
+    // An approval the engine refuses closes the proposal as conflicted: that is not an approval.
+    expect(isDecided(updated("p1", "conflicted"), "p1", "approve")).toBe(false);
   });
 
   test("isActivityFor takes the document's activity and room-wide activity", () => {

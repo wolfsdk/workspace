@@ -46,6 +46,8 @@ const running = startMcpHttpServer({ server: mcp }); // http://127.0.0.1:<port>/
 - Every tool call and the event stream need a seat of the licence. An agent that loses its seat is sent one last
   `notifications/message` whose `data` is an `error` event with `LICENSE_LIMIT`. Over HTTP the stream then closes:
   `GET /mcp` again to take a seat and resume. Over stdio the events follow again after the agent's next line.
+- In a client's server list, name this server anything except `workspace` (for example `wolf-workspace`): Claude Code
+  reserves `workspace` and skips such an entry with a warning.
 
 ## Trust
 

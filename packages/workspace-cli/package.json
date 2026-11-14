@@ -1,6 +1,7 @@
 {
   "name": "@wolfsdk/workspace",
-  "version": "0.0.0",
+  "version": "0.1.0",
+  "description": "Self-hosted Wolf Workspace: the browser UI, the room API and the MCP endpoint on one port, plus pack check and refresh",
   "private": true,
   "type": "module",
   "license": "Apache-2.0",

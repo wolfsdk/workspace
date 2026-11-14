@@ -58,9 +58,11 @@ seats     list the identities that hold a seat of the licence, or free the seat 
                       it is optional: it recalculates XLSX sources and applies the edits, where without
                       it the package reads cached values and applies the edits itself.
 --json                print the report (or the error) as one JSON document on standard output.
---static-dir <dir>    the compiled workspace UI (default: apps/workspace/dist of this checkout, when built).
+--static-dir <dir>    the compiled workspace UI (default: the UI packed with this package, else
+                      apps/workspace/dist of a checkout, when built).
 --wasm-dir <dir>      a local engine channel (latest.txt, v<VERSION>/...) served at /wasm with CORS.
---pack <dir>          the pack /api/pack checks and /api/pack/refresh refreshes.
+--pack <dir>          the pack /api/pack checks and /api/pack/refresh refreshes on disk, and the MCP tool
+                      pack_link_refresh refreshes into the documents of a room.
 --default-room <id>   the room /mcp attaches to when a request names none; created at start when absent.
 --workspace-id <id>   the workspace of rooms created without one (default: that of the first room).`;
 
@@ -124,8 +126,11 @@ function runSeats(args: string[], io: CliIo): number {
   }
 }
 
-/** The compiled workspace UI of this checkout. */
-const BUILT_UI = join(import.meta.dir, "..", "..", "..", "apps", "workspace", "dist");
+/** The compiled workspace UI: `ui/` in the npm package, `apps/workspace/dist` in a checkout. */
+const BUILT_UI =
+  [join(import.meta.dir, "..", "ui"), join(import.meta.dir, "..", "..", "..", "apps", "workspace", "dist")].find((dir) =>
+    existsSync(join(dir, "index.html")),
+  ) ?? null;
 
 const ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 
@@ -236,7 +241,7 @@ async function runServe(args: string[], io: CliIo): Promise<number> {
   }
   const port = count("--port", values.port, 8787, 0);
   const size = count("--pool", values.pool, 2, 1);
-  const staticDir = directory("--static-dir", values["static-dir"]) ?? (existsSync(join(BUILT_UI, "index.html")) ? BUILT_UI : null);
+  const staticDir = directory("--static-dir", values["static-dir"]) ?? BUILT_UI;
   const wasmDir = directory("--wasm-dir", values["wasm-dir"]);
   const packDir = directory("--pack", values.pack);
   const defaultRoom = id("--default-room", values["default-room"]);

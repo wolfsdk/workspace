@@ -1,0 +1,115 @@
+# Builds, packs and checks @wolfsdk/protocol, @wolfsdk/server, @wolfsdk/mcp, @wolfsdk/packs and
+# @wolfsdk/workspace (scripts/pack.ts) and publishes the checked tarballs to npm with provenance
+# on packages-v<version> tags. The five share one version. workflow_dispatch builds, packs and
+# checks without publishing.
+#
+# The publish job authenticates through the npm trusted publisher for this repository and
+# workflow (environment npm) and publishes directly. A trusted publisher can only be added
+# to a package that already exists, so the first version is bootstrapped with an NPM_TOKEN
+# repository secret: with that secret set, the job stages each version (npm stage publish)
+# and a maintainer approves them with 2FA on npmjs.com. Delete the secret once the trusted
+# publishers are configured.
+name: publish-packages
+
+on:
+  push:
+    tags:
+      - "packages-v*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-packages-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: "1.4.0"
+      - name: Check that the tag names the version of every package
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          set -euo pipefail
+          for dir in protocol server mcp packs workspace-cli; do
+            version=$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1], "rb"))["version"])' "packages/$dir/package.json")
+            if [ "$GITHUB_REF_NAME" != "packages-v$version" ]; then
+              echo "publish-packages: tag $GITHUB_REF_NAME does not name version $version of packages/$dir" >&2
+              exit 1
+            fi
+          done
+      - name: Install locked dependencies
+        run: bun install --frozen-lockfile
+      - name: Build the workspace UI that @wolfsdk/workspace carries
+        run: bun run build
+      - name: Pack and check the packages
+        run: bun run pack:check
+      - name: Record the tarball digests
+        working-directory: pack
+        run: |
+          set -euo pipefail
+          sha256sum --check --strict SHA256SUMS
+          cat SHA256SUMS >>"$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: package-tarballs
+          path: |
+            pack/*.tgz
+            pack/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 30
+
+  publish:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/packages-v')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    environment:
+      name: npm
+      url: https://www.npmjs.com/package/@wolfsdk/workspace
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: package-tarballs
+          path: dist
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "24"
+      - name: Verify the tarball digests
+        working-directory: dist
+        run: sha256sum --check --strict SHA256SUMS
+      - name: Publish the packages to npm with provenance
+        working-directory: dist
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -euo pipefail
+          npm install --global npm@^11.15.0
+          if [ -n "${NODE_AUTH_TOKEN:-}" ]; then
+            npm config set //registry.npmjs.org/:_authToken "$NODE_AUTH_TOKEN" --location project
+          fi
+          # A package comes after the ones it depends on: protocol, server, packs, mcp, workspace.
+          for name in protocol server packs mcp workspace; do
+            tarball=$(awk -v name="wolfsdk-$name-" 'index($2, name) == 1 {print $2}' SHA256SUMS)
+            if [ -z "$tarball" ] || [ ! -f "$tarball" ]; then
+              echo "publish-packages: no tarball for @wolfsdk/$name in SHA256SUMS" >&2
+              exit 1
+            fi
+            if [ -n "${NODE_AUTH_TOKEN:-}" ]; then
+              npm stage publish --provenance --access public --registry https://registry.npmjs.org "$PWD/$tarball"
+              echo "Staged $tarball; approve it with 2FA under Staged Packages on npmjs.com." >>"$GITHUB_STEP_SUMMARY"
+            else
+              npm publish --provenance --access public --registry https://registry.npmjs.org "$PWD/$tarball"
+            fi
+          done

@@ -1,17 +1,19 @@
 # Apache-2.0 - Copyright 2026 SynthGL, Inc.
 # Self-hosted Wolf Workspace: one container serving the browser UI, the API, the room WebSocket (/ws) and the
 # MCP endpoint (/mcp) on port 8787, with pooled engine workers.
-# Without WOLF_LICENSE_KEY, runs under the Community Self-Host grant (1 workspace, up to 5 seats).
 #
-#   1. Write ./actors.json, a map of bearer tokens to actors:
-#        {"<token>": {"kind": "user", "id": "alice", "name": "Alice"}, "<token>": {"kind": "agent", "id": "scout", "name": "Scout"}}
-#   2. mkdir -p data/blobs (the container runs as uid 1000 and writes the rooms there), then docker compose up -d
-#   3. Open http://127.0.0.1:8787/?token=<token>
+#   docker compose up -d && docker compose logs workspace
 #
-# Rooms and document blobs live in ./data. Set WOLF_WORKSPACE_BIND=0.0.0.0 only behind TLS: tokens travel in the
-# clear on plain HTTP.
+# The first start downloads the Wolf engine from https://wolfsdk.com into the data volume, creates one user and
+# prints the address to sign in at. Rooms, document blobs, the engine and the actor table (actors.json, a map of
+# bearer token to actor) live in the workspace-data volume.
+#
+# Without WOLF_LICENSE_KEY the engine runs under the Community Self-Host grant (1 workspace, up to 5 seats).
+# Set WOLF_WORKSPACE_BIND=0.0.0.0 only behind TLS: tokens travel in the clear on plain HTTP.
+# To build the image from this checkout instead of pulling it: docker compose up -d --build
 services:
   workspace:
+    image: ghcr.io/wolfsdk/workspace:0.1.0
     platform: linux/amd64
     build:
       context: .
@@ -21,6 +23,8 @@ services:
     environment:
       WOLF_LICENSE_KEY: "${WOLF_LICENSE_KEY:-}"
     volumes:
-      - ./data:/data
-      - ./actors.json:/etc/wolf-workspace/actors.json:ro
+      - workspace-data:/data
     restart: unless-stopped
+
+volumes:
+  workspace-data:
