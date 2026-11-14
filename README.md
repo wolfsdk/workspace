@@ -37,8 +37,9 @@ signed-in seats, on your own infrastructure, with no licence key. Anything large
 
 ### With Docker
 
-The four commands above are the whole install. The image (`ghcr.io/wolfsdk/workspace:0.1.0`) is
-built for `linux/amd64` and holds only this repository's code. On the first start the container:
+The four commands above are the whole install. The image (`ghcr.io/wolfsdk/workspace:0.1.0-1`) is
+built for `linux/amd64` and `linux/arm64` and holds only this repository's code. On the first
+start the container:
 
 - installs the pinned Wolf engine (0.2.25) from `https://wolfsdk.com/install` into the data volume,
   under the Wolf Community Self-Host licence, and prints where it keeps the licence text
@@ -46,12 +47,17 @@ built for `linux/amd64` and holds only this repository's code. On the first star
   reuse it. To use your own `wolf` executable instead, mount it and name it with `WOLF_ENGINE`.
 - creates one user, `Owner`, and prints that user's sign-in address to the log.
 
-On an Apple Silicon Mac the image runs under x86-64 emulation and needs Rosetta. Under QEMU
-emulation the server starts, prints the sign-in address, then crashes within seconds with
-`CPU lacks AVX support` and stops answering. With colima, start the virtual machine with
-`colima start --vm-type vz --vz-rosetta`. With Docker Desktop, keep "Use Rosetta for x86_64/amd64
-emulation on Apple Silicon" switched on. The first run was timed on colima 0.10.3 with Rosetta;
-Docker Desktop has not been timed yet.
+On an Apple Silicon Mac, Docker pulls the `linux/arm64` image and the server runs natively, so
+Rosetta is not needed. The engine's Linux build is x86-64 only: the arm64 container installs that
+build and runs it through the x86-64 emulation of Docker's virtual machine. On colima 0.10.3 with
+its default settings (Rosetta off, QEMU), a cold start took 24 s from `docker compose up -d` to a
+signed-in room, and a DOCX was uploaded, edited and downloaded in the second after that. Docker
+Desktop has not been timed. An arm64 Linux host needs x86-64 emulation too (`qemu-user-static`,
+for example); without it the container stops at start and says so.
+
+When the server crashes, or fails three health probes in a row (they run 10 s apart), the
+container exits and Docker starts it again. A crashed server was answering again within 1 s, and
+one that had stopped answering within 43 s.
 
 Rooms, document blobs, the engine and the actor table (`actors.json`, a map of bearer token to
 actor) live in the `workspace-data` volume. Browsers load the engine's WebAssembly module from
