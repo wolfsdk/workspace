@@ -18,21 +18,26 @@ else
     # A self-hosted workspace runs the engine under the Community Self-Host licence, so the installer
     # is told to name that one.
     engine=$data/bin/wolf
-    if [ ! -x "$engine" ] || [ ! -d "$data/bin/wolf-licenses/$WOLF_VERSION" ]; then
-        # The engine's Linux build is x86-64 only. An arm64 container installs that build and runs
-        # it through the host's x86-64 emulation.
-        case "$(uname -m)" in
-            aarch64|arm64) target=x86_64-unknown-linux-musl ;;
-            *) target= ;;
-        esac
+    # Image 0.1.0-1 put the x86-64 engine into the volume of an arm64 container and ran it through
+    # emulation. Such a volume gets the arm64 build: byte 18 of an ELF file names its machine, and
+    # 3e is x86-64.
+    foreign=
+    case "$(uname -m)" in
+        aarch64|arm64)
+            if [ -x "$engine" ] && [ "$(od -An -tx1 -j18 -N1 "$engine" | tr -d ' ')" = 3e ]; then
+                foreign=1
+            fi
+            ;;
+    esac
+    if [ ! -x "$engine" ] || [ -n "$foreign" ] || [ ! -d "$data/bin/wolf-licenses/$WOLF_VERSION" ]; then
         echo "Installing the Wolf engine $WOLF_VERSION from $WOLF_INSTALL_URL into $data/bin"
         curl -fsSL "$WOLF_INSTALL_URL" | env WOLF_INSTALL_DIR="$data/bin" WOLF_VERSION="$WOLF_VERSION" \
-            WOLF_INSTALL_TARGET="$target" WOLF_INSTALL_TERMS="${WOLF_INSTALL_TERMS:-community-selfhost}" sh
+            WOLF_INSTALL_TERMS="${WOLF_INSTALL_TERMS:-community-selfhost}" sh
     fi
 fi
 if ! "$engine" --version >/dev/null 2>&1; then
     echo "error: $engine does not run in this container ($(uname -m))." >&2
-    echo "The Wolf engine's Linux build is x86-64 only: on an arm64 host, Docker must be able to run x86-64 executables." >&2
+    echo "The engine has to be a Linux executable for this machine: the installer picks that build, and a WOLF_ENGINE of your own has to match." >&2
     exit 1
 fi
 
