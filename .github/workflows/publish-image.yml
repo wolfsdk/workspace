@@ -1,9 +1,13 @@
-# Builds the self-host image (Dockerfile) and pushes it to ghcr.io/wolfsdk/workspace on
-# workspace-v<version> tags, as <version> and latest. The version is that of @wolfsdk/workspace.
-# workflow_dispatch builds the image and starts it once without pushing.
+# Builds the self-host image (Dockerfile) for linux/amd64 and linux/arm64 and pushes it to
+# ghcr.io/wolfsdk/workspace on workspace-v<version> tags, as <version> and latest. The version is
+# that of @wolfsdk/workspace. A workspace-v<version>-<revision> tag rebuilds the image for the same
+# package version, for a change to the Dockerfile or the entrypoint only, and pushes it as
+# <version>-<revision> and latest. workflow_dispatch builds both images and starts each once
+# without pushing.
 #
 # The image holds this repository's open-source code only. The Wolf engine is not in it: the
-# container installs it into its data volume on first start (docker-entrypoint.sh).
+# container installs it into its data volume on first start (docker-entrypoint.sh). The engine's
+# Linux build is x86-64 only, so the arm64 image runs it through the host's x86-64 emulation.
 name: publish-image
 
 on:
@@ -23,12 +27,11 @@ env:
   IMAGE: ghcr.io/wolfsdk/workspace
 
 jobs:
-  image:
+  version:
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
-    permissions:
-      contents: read
-      packages: write
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.version.outputs.version }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -37,15 +40,44 @@ jobs:
         id: version
         run: |
           set -euo pipefail
-          version=$(python3 -c 'import json; print(json.load(open("packages/workspace-cli/package.json", "rb"))["version"])')
-          if [ "$GITHUB_REF_TYPE" = tag ] && [ "$GITHUB_REF_NAME" != "workspace-v$version" ]; then
-            echo "publish-image: tag $GITHUB_REF_NAME does not name version $version" >&2
-            exit 1
+          package=$(python3 -c 'import json; print(json.load(open("packages/workspace-cli/package.json", "rb"))["version"])')
+          version=$package
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            version=${GITHUB_REF_NAME#workspace-v}
+            revision=${version#"$package"}
+            case "$revision" in
+              "" | -[1-9] | -[1-9][0-9]) ;;
+              *)
+                echo "publish-image: tag $GITHUB_REF_NAME names neither version $package nor a revision of it ($package-N)" >&2
+                exit 1
+                ;;
+            esac
           fi
           echo "version=$version" >>"$GITHUB_OUTPUT"
+
+  image:
+    needs: version
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      ARCH: ${{ matrix.arch }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Build the image
-        env:
-          VERSION: ${{ steps.version.outputs.version }}
         run: |
           set -euo pipefail
           docker build \
@@ -53,13 +85,20 @@ jobs:
             --label "org.opencontainers.image.revision=$GITHUB_SHA" \
             --label "org.opencontainers.image.version=$VERSION" \
             --label "org.opencontainers.image.licenses=Apache-2.0" \
-            --tag "$IMAGE:$VERSION" --tag "$IMAGE:latest" .
-      - name: Start the image once and wait for it to answer
-        env:
-          VERSION: ${{ steps.version.outputs.version }}
+            --tag "$IMAGE:$VERSION-$ARCH" .
+          test "$(docker inspect --format '{{.Architecture}}' "$IMAGE:$VERSION-$ARCH")" = "$ARCH"
+      - name: Let the arm64 runner run the x86-64 engine
+        if: matrix.arch == 'arm64'
         run: |
           set -euo pipefail
-          docker run --detach --name smoke --publish 127.0.0.1:8787:8787 "$IMAGE:$VERSION"
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends qemu-user-static
+      # The entrypoint installs the engine and runs it once before it serves, so an answer here
+      # also shows that the engine runs in this image.
+      - name: Start the image once and wait for it to answer
+        run: |
+          set -euo pipefail
+          docker run --detach --name smoke --publish 127.0.0.1:8787:8787 "$IMAGE:$VERSION-$ARCH"
           for attempt in $(seq 1 60); do
             if curl -fsS http://127.0.0.1:8787/api/health; then
               docker rm --force smoke
@@ -72,11 +111,28 @@ jobs:
       - name: Push the image
         if: startsWith(github.ref, 'refs/tags/workspace-v')
         env:
-          VERSION: ${{ steps.version.outputs.version }}
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           printf '%s' "$GHCR_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
-          docker push "$IMAGE:$VERSION"
-          docker push "$IMAGE:latest"
-          docker inspect --format '{{index .RepoDigests 0}}' "$IMAGE:$VERSION" >>"$GITHUB_STEP_SUMMARY"
+          docker push "$IMAGE:$VERSION-$ARCH"
+
+  manifest:
+    needs: [version, image]
+    if: startsWith(github.ref, 'refs/tags/workspace-v')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: write
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Publish one tag that names both images
+        run: |
+          set -euo pipefail
+          printf '%s' "$GHCR_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+          docker buildx imagetools create --tag "$IMAGE:$VERSION" --tag "$IMAGE:latest" \
+            "$IMAGE:$VERSION-amd64" "$IMAGE:$VERSION-arm64"
+          docker buildx imagetools inspect "$IMAGE:$VERSION" >>"$GITHUB_STEP_SUMMARY"

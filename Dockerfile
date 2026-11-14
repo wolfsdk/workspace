@@ -6,8 +6,9 @@
 # not in it: on first start the entrypoint installs the pinned version from https://wolfsdk.com/install into the
 # data volume, or uses the `wolf` executable that WOLF_ENGINE names when you mount your own.
 #
-# The platform is fixed because the engine's Linux build is x64 only.
-FROM --platform=linux/amd64 oven/bun:1.4.4-debian AS runtime
+# The image is built for linux/amd64 and linux/arm64. The engine's Linux build is x86-64 only: an arm64
+# container installs that build and runs it through the host's x86-64 emulation.
+FROM oven/bun:1.4.4-debian AS runtime
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates curl \
