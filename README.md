@@ -37,7 +37,7 @@ signed-in seats, on your own infrastructure, with no licence key. Anything large
 
 ### With Docker
 
-The four commands above are the whole install. The image (`ghcr.io/wolfsdk/workspace:0.1.0-1`) is
+The four commands above are the whole install. The image (`ghcr.io/wolfsdk/workspace:0.1.0-2`) is
 built for `linux/amd64` and `linux/arm64` and holds only this repository's code. On the first
 start the container:
 
@@ -47,13 +47,13 @@ start the container:
   reuse it. To use your own `wolf` executable instead, mount it and name it with `WOLF_ENGINE`.
 - creates one user, `Owner`, and prints that user's sign-in address to the log.
 
-On an Apple Silicon Mac, Docker pulls the `linux/arm64` image and the server runs natively, so
-Rosetta is not needed. The engine's Linux build is x86-64 only: the arm64 container installs that
-build and runs it through the x86-64 emulation of Docker's virtual machine. On colima 0.10.3 with
-its default settings (Rosetta off, QEMU), a cold start took 24 s from `docker compose up -d` to a
-signed-in room, and a DOCX was uploaded, edited and downloaded in the second after that. Docker
-Desktop has not been timed. An arm64 Linux host needs x86-64 emulation too (`qemu-user-static`,
-for example); without it the container stops at start and says so.
+On an Apple Silicon Mac, Docker pulls the `linux/arm64` image and the container installs the
+engine's arm64 Linux build, so neither the server nor the engine needs Rosetta or x86-64
+emulation. On colima 0.10.3 with its default settings and its x86-64 emulation switched off, a
+cold start took 11 s from `docker compose up -d` to a signed-in room, and a DOCX was uploaded,
+edited and downloaded in the second after that. Docker Desktop has not been timed. An arm64 Linux
+host needs no emulation either. A data volume that image 0.1.0-1 filled on an arm64 host holds the
+x86-64 engine; the first start of this image replaces it with the arm64 build.
 
 When the server crashes, or fails three health probes in a row (they run 10 s apart), the
 container exits and Docker starts it again. A crashed server was answering again within 1 s, and
