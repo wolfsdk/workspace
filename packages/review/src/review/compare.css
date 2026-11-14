@@ -1,0 +1,121 @@
+/* Before/after comparison. Tokens come from the shell (`--we-*`). The layer lets pointer events
+ * through; only the divider handle takes them. */
+.we-compare-layer {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+.we-compare-before {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  overflow: hidden;
+  background: #fff;
+}
+.we-compare-before img {
+  position: absolute;
+  top: 0;
+  left: 0;
+  max-width: none;
+  user-select: none;
+}
+.we-compare-handle {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 16px;
+  margin-left: -8px;
+  cursor: ew-resize;
+  pointer-events: auto;
+  touch-action: none;
+  outline: none;
+}
+.we-compare-handle::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 7px;
+  width: 2px;
+  background: var(--we-accent, #2463eb);
+}
+.we-compare-handle::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 2px;
+  width: 12px;
+  height: 28px;
+  margin-top: -14px;
+  border-radius: 6px;
+  background: var(--we-accent, #2463eb);
+  box-shadow: 0 0 0 2px var(--we-bg, #fff);
+}
+/* The shell's ring (`.we-theme :focus-visible`) would outline the 16 px hit area, drawing two
+ * more lines beside the divider; the ring goes on the grip instead. */
+.we-compare-layer .we-compare-handle:focus-visible {
+  outline: none;
+}
+.we-compare-handle:focus-visible::after {
+  box-shadow:
+    0 0 0 2px var(--we-bg, #fff),
+    0 0 0 4px var(--we-focus, #2463eb);
+}
+/* The after side: right of the divider; holds only its label. */
+.we-compare-after {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  right: 0;
+  overflow: hidden;
+}
+/* Side labels at the top, either side of the divider, in the style of the change tags. */
+.we-compare-label {
+  position: absolute;
+  top: var(--we-space-2, 6px);
+  padding: 0 var(--we-space-2, 4px);
+  border-radius: 2px;
+  font: 600 var(--we-text-xs, 11px) / 16px var(--we-font, system-ui, sans-serif);
+  color: var(--we-on-accent, #fff);
+  background: var(--we-accent, #2463eb);
+  white-space: nowrap;
+  pointer-events: none;
+}
+.we-compare-label-before {
+  right: var(--we-space-3, 10px);
+}
+.we-compare-label-after {
+  left: var(--we-space-3, 10px);
+}
+.we-compare-missing {
+  position: absolute;
+  top: var(--we-space-2, 6px);
+  left: var(--we-space-2, 6px);
+  padding: 1px var(--we-space-2, 6px);
+  border-radius: var(--we-radius-sm, 3px);
+  font: var(--we-text-xs, 11px) / 16px var(--we-font, system-ui, sans-serif);
+  color: var(--we-muted, #666);
+  background: var(--we-bg, #fff);
+  border: 1px solid var(--we-border, #ccc);
+}
+.we-compare-toggle {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--we-space-2, 6px);
+}
+.we-compare-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--we-space-1, 4px);
+  cursor: pointer;
+}
+.we-compare-status {
+  color: var(--we-muted, #666);
+  font-size: var(--we-text-sm, 12px);
+}
+.we-compare-status-unavailable {
+  color: var(--we-danger, #b42318);
+}

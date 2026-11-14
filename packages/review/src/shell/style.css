@@ -1,0 +1,1424 @@
+/* Wolf Review shell frame. Tokens and shared controls live in tokens.css;
+ * every rule here reads them. Plugins render inside `.we-shell`. */
+
+.we-shell {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--we-surface);
+  outline: none;
+}
+.we-shell *,
+.we-shell *::before,
+.we-shell *::after {
+  box-sizing: border-box;
+}
+.we-shell-muted {
+  color: var(--we-muted);
+}
+.we-shell-spacer {
+  flex: 1;
+}
+.we-shell kbd {
+  display: inline-block;
+  min-width: 20px;
+  padding: 1px var(--we-space-2);
+  border: 1px solid var(--we-border);
+  border-bottom-width: 2px;
+  border-radius: var(--we-radius-sm);
+  background: var(--we-bg);
+  font: var(--we-text-sm) / 1.4 var(--we-font-mono);
+  text-align: center;
+}
+
+.we-shell-spinner {
+  flex: none;
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: we-shell-spin 0.8s linear infinite;
+}
+@keyframes we-shell-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* ---- Title bar ---------------------------------------------------------- */
+
+.we-shell-titlebar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--we-space-3);
+  height: 40px;
+  padding: 0 var(--we-space-3) 0 var(--we-space-4);
+  background: var(--we-surface);
+  border-bottom: 1px solid var(--we-divider);
+  white-space: nowrap;
+  min-width: 0;
+}
+.we-shell-brand {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--we-space-3);
+  font-weight: 600;
+  font-size: var(--we-text-md);
+  color: var(--we-fg);
+}
+.we-shell-doc {
+  display: flex;
+  align-items: center;
+  gap: var(--we-space-3);
+  min-width: 0;
+}
+.we-shell-doc-sep {
+  width: 1px;
+  height: 18px;
+  background: var(--we-border);
+}
+.we-shell-filename {
+  min-width: 0;
+  max-width: 40vw;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-weight: 600;
+  font-size: var(--we-text-lg);
+}
+.we-shell-badge {
+  padding: 1px 6px;
+  border-radius: var(--we-radius-sm);
+  font: 600 var(--we-text-xs) / 16px var(--we-font);
+  letter-spacing: 0.04em;
+  color: #ffffff;
+  background: var(--we-muted);
+}
+.we-shell-badge-docx {
+  background: #2b5fc4;
+}
+.we-shell-badge-pptx {
+  background: #c4532b;
+}
+.we-shell-badge-xlsx {
+  background: #1f7a4a;
+}
+.we-shell-revision,
+.we-shell-nodoc {
+  color: var(--we-muted);
+  font-size: var(--we-text-sm);
+}
+.we-shell-busy .we-shell-spinner {
+  width: 10px;
+  height: 10px;
+}
+.we-icon,
+.we-format-icon,
+.we-logo {
+  flex: none;
+  display: block;
+}
+
+/* ---- Toolbars ------------------------------------------------------------ */
+
+.we-shell-toolbar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--we-space-1);
+  height: 44px;
+  padding: 0 var(--we-space-3);
+  background: var(--we-surface);
+  border-bottom: 1px solid var(--we-divider);
+  overflow: hidden;
+  white-space: nowrap;
+}
+.we-shell-toolbar > .we-sep {
+  margin: 0 var(--we-space-3);
+}
+.we-shell-samples-select {
+  width: 120px;
+  margin: 0 var(--we-space-2);
+}
+.we-shell-zoom-select {
+  width: 84px;
+}
+.we-shell-btn-text {
+  font-weight: 500;
+}
+
+.we-shell-ptb-region {
+  flex: none;
+  position: relative;
+  z-index: 20;
+  background: var(--we-surface);
+  border-bottom: 1px solid var(--we-border);
+  outline: none;
+}
+.we-shell-ptb {
+  position: relative;
+  display: flex;
+  align-items: flex-start;
+  gap: var(--we-space-3);
+  min-height: 40px;
+  padding: 6px var(--we-space-3);
+}
+.we-shell-ptb-clip {
+  flex: 1;
+  min-width: 0;
+  height: 32px;
+  overflow: hidden;
+  padding: 2px;
+}
+.we-shell-ptb-content {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--we-space-2) var(--we-space-5);
+}
+.we-shell-ptb-item {
+  min-width: 0;
+}
+/* Plugin toolbar roots sit in the shell's row: no chrome of their own, and they wrap so
+   the row can show the first line and put the rest behind More. */
+.we-shell-ptb-item [role="toolbar"] {
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+.we-shell-ptb-item > [role="toolbar"] {
+  flex-wrap: wrap;
+}
+.we-shell-ptb.is-open .we-shell-ptb-clip {
+  position: absolute;
+  top: 4px;
+  left: var(--we-space-2);
+  right: 88px;
+  height: auto;
+  max-height: min(60vh, 420px);
+  overflow: auto;
+  padding: var(--we-space-3);
+  border: 1px solid var(--we-border);
+  border-radius: var(--we-radius-lg);
+  background: var(--we-raised);
+  box-shadow: var(--we-shadow-3);
+}
+.we-shell-ptb-more {
+  flex: none;
+  margin-top: 2px;
+}
+
+.we-shell-warnings {
+  flex: none;
+  align-items: center;
+  margin: var(--we-space-2) var(--we-space-3) 0;
+  max-height: 96px;
+  overflow: auto;
+}
+.we-shell-warnings > svg {
+  color: var(--we-warning);
+  margin-top: 1px;
+}
+.we-shell-warning-list {
+  flex: 1;
+  min-width: 0;
+}
+
+/* ---- Body: rail, canvas, side panel ------------------------------------ */
+
+.we-shell-body {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+.we-shell-left,
+.we-shell-side {
+  flex: none;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: auto;
+  background: var(--we-surface);
+  outline: none;
+}
+.we-shell-left[hidden] {
+  display: none;
+}
+.we-shell-splitter {
+  flex: none;
+  position: relative;
+  width: 1px;
+  background: var(--we-border);
+  cursor: col-resize;
+  touch-action: none;
+  z-index: 5;
+}
+.we-shell-splitter::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -3px;
+  right: -3px;
+}
+.we-shell-splitter:hover,
+.we-shell-splitter:focus-visible {
+  background: var(--we-accent);
+  outline: none;
+  box-shadow: 0 0 0 1px var(--we-accent);
+}
+.we-shell-main {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--we-canvas);
+  outline: none;
+}
+.we-shell-main:focus-visible {
+  box-shadow: inset 0 0 0 2px var(--we-focus);
+}
+
+/* Plugin strips under the canvas (speaker notes): their own height, the canvas takes the rest. */
+.we-shell-below-canvas {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  max-height: 60%;
+  min-height: 0;
+  overflow: auto;
+  background: var(--we-surface);
+}
+.we-shell-below-canvas > * {
+  flex: none;
+}
+
+.we-shell-busybar {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  z-index: 30;
+  overflow: hidden;
+  background: var(--we-accent-soft);
+  pointer-events: none;
+  /* Quiet: edits that finish within 400 ms show nothing. */
+  opacity: 0;
+  animation: we-shell-appear 150ms linear 400ms forwards;
+}
+@keyframes we-shell-appear {
+  to {
+    opacity: 1;
+  }
+}
+.we-shell-busybar::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 30%;
+  background: var(--we-accent);
+  animation: we-shell-slide 1.1s var(--we-ease) infinite;
+}
+@keyframes we-shell-slide {
+  from {
+    left: -30%;
+  }
+  to {
+    left: 100%;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .we-shell-busybar::after {
+    animation: none;
+    left: 0;
+    width: 100%;
+    opacity: 0.6;
+  }
+}
+
+/* Side panel tabs: full titles, else icon + short label, else a More menu; never scrolls. */
+.we-shell-tabbar {
+  position: relative;
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--we-space-1);
+  padding: 0 var(--we-space-2);
+  border-bottom: 1px solid var(--we-divider);
+}
+.we-shell-tabs {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  gap: var(--we-space-1);
+  overflow: hidden;
+}
+.we-shell-tab {
+  flex: none;
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 36px;
+  padding: 0 var(--we-space-3);
+  border: 0;
+  background: none;
+  color: var(--we-muted);
+  font: 500 var(--we-text-md) var(--we-font);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.we-shell-tab[hidden] {
+  display: none;
+}
+.we-shell-tabbar:not(.is-full) .we-shell-tabs .we-shell-tab,
+.we-shell-tabs-measure .we-shell-tab[data-measure="short"],
+.we-shell-tabs-measure .we-shell-tab[data-measure="icon"] {
+  padding: 0 var(--we-space-2);
+}
+.we-shell-tab-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.we-shell-tab:hover {
+  color: var(--we-fg);
+}
+.we-shell-tab[aria-selected="true"] {
+  color: var(--we-fg);
+}
+.we-shell-tab[aria-selected="true"] .we-icon {
+  color: var(--we-accent);
+}
+.we-shell-tab[aria-selected="true"]::after {
+  content: "";
+  position: absolute;
+  left: var(--we-space-2);
+  right: var(--we-space-2);
+  bottom: 0;
+  height: 2px;
+  border-radius: 2px 2px 0 0;
+  background: var(--we-accent);
+}
+.we-shell-tab:focus-visible {
+  outline-offset: -2px;
+}
+.we-shell-tabs-more {
+  position: relative;
+  flex: none;
+}
+.we-shell-tabs-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 60;
+  min-width: 200px;
+}
+.we-shell-tabs-menu .we-menu-item {
+  display: flex;
+  align-items: center;
+  gap: var(--we-space-2);
+  width: 100%;
+}
+/* Zero-size and clipped, so its full-width content never widens the side panel. */
+.we-shell-tabs-measure {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 0;
+  height: 0;
+  overflow: hidden;
+  display: flex;
+  visibility: hidden;
+  pointer-events: none;
+  white-space: nowrap;
+}
+.we-shell-panel {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: auto;
+  background: var(--we-surface);
+}
+.we-shell-panel[hidden] {
+  display: none;
+}
+
+/* ---- Status bar --------------------------------------------------------- */
+
+.we-shell-statusbar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--we-space-4);
+  min-height: 30px;
+  padding: 0 var(--we-space-2) 0 var(--we-space-3);
+  background: var(--we-surface);
+  border-top: 1px solid var(--we-divider);
+  color: var(--we-muted);
+  font-size: var(--we-text-sm);
+}
+.we-shell-bottom-plugins {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--we-space-3);
+  overflow: hidden;
+}
+.we-shell-status {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--we-space-4);
+  white-space: nowrap;
+}
+.we-shell-status .we-btn {
+  color: var(--we-muted);
+}
+.we-shell-popover-anchor {
+  position: relative;
+  display: inline-flex;
+}
+.we-shell-popover {
+  position: absolute;
+  right: 0;
+  z-index: 60;
+  width: 380px;
+  max-width: calc(100vw - 24px);
+  padding: var(--we-space-4);
+  color: var(--we-fg);
+}
+.we-shell-popover-up {
+  bottom: calc(100% + 6px);
+}
+.we-shell-popover-down {
+  top: calc(100% + 6px);
+}
+.we-shell-popover[hidden] {
+  display: none;
+}
+.we-shell-perf-title {
+  margin-bottom: var(--we-space-3);
+  font-weight: 600;
+  font-size: var(--we-text-md);
+}
+.we-shell-perf-list {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: var(--we-space-2) var(--we-space-4);
+  margin: 0;
+  font-size: var(--we-text-sm);
+}
+.we-shell-perf-list dt {
+  color: var(--we-muted);
+}
+.we-shell-perf-list dd {
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+.we-shell-sha {
+  font: var(--we-text-xs) var(--we-font-mono);
+  overflow-wrap: anywhere;
+}
+
+/* ---- Error toast -------------------------------------------------------- */
+
+.we-shell-toasts {
+  position: absolute;
+  top: var(--we-space-4);
+  right: var(--we-space-4);
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  gap: var(--we-space-3);
+  width: min(420px, calc(100% - 24px));
+  pointer-events: none;
+}
+.we-shell-toast {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--we-space-3);
+  padding: var(--we-space-4);
+  border: 1px solid var(--we-border);
+  border-left: 3px solid var(--we-danger);
+  border-radius: var(--we-radius-lg);
+  background: var(--we-raised);
+  box-shadow: var(--we-shadow-3);
+  pointer-events: auto;
+  animation: we-shell-toast-in var(--we-duration) var(--we-ease);
+}
+@keyframes we-shell-toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(-6px);
+  }
+}
+.we-shell-toast-icon {
+  color: var(--we-danger);
+  padding-top: 1px;
+}
+.we-shell-toast-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--we-space-2);
+}
+.we-shell-error-code {
+  font: 600 var(--we-text-sm) var(--we-font-mono);
+  color: var(--we-danger);
+}
+.we-shell-toast-message {
+  overflow-wrap: anywhere;
+}
+.we-shell-error-argument {
+  display: block;
+  max-height: 80px;
+  overflow: auto;
+  padding: var(--we-space-2) var(--we-space-3);
+  border-radius: var(--we-radius-sm);
+  background: var(--we-surface);
+  font: var(--we-text-xs) / 1.5 var(--we-font-mono);
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+.we-shell-error-extra summary {
+  cursor: pointer;
+  color: var(--we-muted);
+  font-size: var(--we-text-sm);
+}
+.we-shell-error-extra pre {
+  max-height: 140px;
+  overflow: auto;
+  margin: var(--we-space-2) 0 0;
+  font: var(--we-text-xs) var(--we-font-mono);
+}
+.we-shell-toast-actions {
+  display: flex;
+  gap: var(--we-space-2);
+  margin-top: var(--we-space-1);
+}
+
+/* ---- Landing, loading, fatal ------------------------------------------- */
+
+.we-shell-landing {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--we-space-6);
+  padding: var(--we-space-7) var(--we-space-5);
+}
+.we-shell-problem {
+  width: min(640px, 100%);
+  flex-shrink: 0;
+}
+.we-shell-problem > div {
+  flex: 1;
+  min-width: 0;
+}
+.we-shell-problem p {
+  margin: var(--we-space-1) 0 0;
+}
+.we-shell-problem-code {
+  color: var(--we-fg-2);
+  overflow-wrap: anywhere;
+}
+.we-shell-dropzone {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--we-space-3);
+  width: min(640px, 100%);
+  padding: var(--we-space-7) var(--we-space-6);
+  border: 2px dashed var(--we-border-strong);
+  border-radius: 16px;
+  background: var(--we-bg);
+  text-align: center;
+}
+.we-shell-dropzone p {
+  max-width: 440px;
+  margin: 0;
+}
+.we-shell-dropzone-icon {
+  display: grid;
+  place-items: center;
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  background: var(--we-accent-soft);
+  color: var(--we-accent);
+}
+.we-shell-landing-title {
+  margin: 0;
+  font-size: var(--we-text-xl);
+  font-weight: 600;
+}
+.we-shell-landing-open {
+  height: 36px;
+  padding: 0 var(--we-space-5);
+  margin-top: var(--we-space-2);
+}
+.we-shell-landing-formats {
+  display: flex;
+  align-items: center;
+  gap: var(--we-space-2);
+  color: var(--we-muted);
+  font-size: var(--we-text-xs);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+.we-shell-landing-formats .we-format-icon:not(:first-child) {
+  margin-left: var(--we-space-3);
+}
+.we-shell-samples {
+  width: min(960px, 100%);
+}
+.we-shell-samples-title {
+  margin: 0 0 var(--we-space-3);
+  font-size: var(--we-text-sm);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--we-muted);
+}
+.we-shell-sample-groups {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: var(--we-space-5);
+}
+.we-shell-sample-group h3 {
+  margin: 0 0 var(--we-space-2);
+  font-size: var(--we-text-md);
+  font-weight: 600;
+}
+.we-shell-sample-group ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--we-space-1);
+}
+.we-shell-sample {
+  display: flex;
+  align-items: center;
+  gap: var(--we-space-3);
+  width: 100%;
+  min-height: 38px;
+  padding: var(--we-space-2) var(--we-space-3);
+  border: 1px solid transparent;
+  border-radius: var(--we-radius);
+  background: none;
+  color: var(--we-fg);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.we-shell-sample:hover {
+  border-color: var(--we-border);
+  background: var(--we-bg);
+  box-shadow: var(--we-shadow-1);
+}
+.we-shell-sample-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.we-shell-sample-ext {
+  color: var(--we-muted);
+  font-size: var(--we-text-xs);
+  font-weight: 600;
+}
+
+.we-shell-loading {
+  flex: 1;
+  display: grid;
+  place-items: center;
+  padding: var(--we-space-6);
+}
+.we-shell-loading-card {
+  width: min(440px, 100%);
+  padding: var(--we-space-6);
+  border: 1px solid var(--we-border);
+  border-radius: var(--we-radius-lg);
+  background: var(--we-raised);
+  box-shadow: var(--we-shadow-2);
+}
+.we-shell-loading.is-compact {
+  padding: 0;
+}
+.we-shell-loading.is-compact .we-shell-loading-card {
+  width: 360px;
+  padding: var(--we-space-4) var(--we-space-5);
+  box-shadow: var(--we-shadow-3);
+}
+.we-shell-loading-title {
+  margin-bottom: var(--we-space-4);
+  font-weight: 600;
+  font-size: var(--we-text-lg);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.we-shell-progress {
+  position: relative;
+  height: 6px;
+  overflow: hidden;
+  border-radius: 3px;
+  background: var(--we-skeleton);
+}
+.we-shell-progress-fill {
+  height: 100%;
+  border-radius: 3px;
+  background: var(--we-accent);
+  transition: width 200ms var(--we-ease);
+}
+.we-shell-progress.is-indeterminate::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 25%;
+  background: linear-gradient(90deg, transparent, var(--we-accent), transparent);
+  opacity: 0.6;
+  animation: we-shell-slide 1.2s linear infinite;
+}
+.we-shell-stages {
+  list-style: none;
+  margin: var(--we-space-4) 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--we-space-3);
+}
+.we-shell-stage {
+  display: flex;
+  align-items: center;
+  gap: var(--we-space-3);
+  color: var(--we-muted);
+}
+.we-shell-stage.is-active {
+  color: var(--we-fg);
+  font-weight: 500;
+}
+.we-shell-stage.is-done {
+  color: var(--we-fg-2);
+}
+.we-shell-stage-mark {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  border: 1.5px solid var(--we-border-strong);
+  border-radius: 50%;
+}
+.we-shell-stage.is-done .we-shell-stage-mark {
+  border-color: var(--we-success);
+  background: var(--we-success);
+  color: #ffffff;
+}
+.we-shell-stage.is-active .we-shell-stage-mark {
+  border-color: transparent;
+  color: var(--we-accent);
+}
+.we-shell-stage-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.we-shell-stage-detail {
+  color: var(--we-muted);
+  font-size: var(--we-text-sm);
+  font-variant-numeric: tabular-nums;
+}
+.we-shell-loading-note {
+  margin-top: var(--we-space-4);
+  font-size: var(--we-text-sm);
+}
+
+.we-shell-veil {
+  position: absolute;
+  inset: 0;
+  z-index: 40;
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  padding-top: 15vh;
+  background: var(--we-scrim);
+}
+.we-shell-veil.is-passive {
+  background: none;
+  pointer-events: none;
+  align-items: flex-end;
+  padding: 0 0 var(--we-space-6);
+}
+
+.we-shell-fatal {
+  width: min(560px, 100%);
+  padding: var(--we-space-5);
+  font-size: var(--we-text-md);
+}
+.we-shell-fatal p {
+  margin: var(--we-space-2) 0;
+}
+.we-shell-fatal-icon {
+  color: var(--we-danger);
+}
+.we-shell-fatal .we-btn {
+  margin-top: var(--we-space-3);
+}
+
+/* ---- Drop overlay, shortcuts sheet -------------------------------------- */
+
+.we-shell-drop {
+  position: absolute;
+  inset: 0;
+  z-index: 70;
+  display: grid;
+  place-items: center;
+  background: var(--we-scrim);
+  pointer-events: none;
+}
+.we-shell-drop-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--we-space-2);
+  padding: var(--we-space-6) var(--we-space-7);
+  border: 2px dashed var(--we-accent);
+  border-radius: 16px;
+  background: var(--we-raised);
+  color: var(--we-accent);
+  font-size: var(--we-text-lg);
+  font-weight: 600;
+  box-shadow: var(--we-shadow-3);
+}
+.we-shell-drop-card .we-shell-muted {
+  font-size: var(--we-text-sm);
+  font-weight: 400;
+}
+.we-shell-scrim {
+  position: absolute;
+  inset: 0;
+  z-index: 80;
+  display: grid;
+  place-items: center;
+  padding: var(--we-space-5);
+  background: var(--we-scrim);
+}
+.we-shell-sheet {
+  width: min(560px, 100%);
+  max-height: 100%;
+  overflow: auto;
+  padding: var(--we-space-5) var(--we-space-6);
+  border: 1px solid var(--we-border);
+  border-radius: var(--we-radius-lg);
+  background: var(--we-raised);
+  box-shadow: var(--we-shadow-3);
+}
+.we-shell-sheet-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: var(--we-space-4);
+}
+.we-shell-sheet-head h2 {
+  margin: 0;
+  font-size: var(--we-text-lg);
+  font-weight: 600;
+}
+.we-shell-shortcut-group + .we-shell-shortcut-group {
+  margin-top: var(--we-space-4);
+}
+.we-shell-shortcut-group h3 {
+  margin: 0 0 var(--we-space-1);
+  font-size: var(--we-text-sm);
+  font-weight: 600;
+  color: var(--we-fg-2);
+}
+.we-shell-sheet .we-notice {
+  display: block;
+  margin: 0 0 var(--we-space-4);
+}
+.we-shell-shortcut-list {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+}
+.we-shell-shortcut {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--we-space-4);
+  padding: var(--we-space-2) 0;
+  border-bottom: 1px solid var(--we-divider);
+}
+.we-shell-shortcut dt {
+  order: 2;
+  white-space: nowrap;
+}
+.we-shell-shortcut dd {
+  margin: 0;
+}
+.we-shell-sheet-note {
+  margin: var(--we-space-4) 0 0;
+  font-size: var(--we-text-sm);
+}
+.we-shell-font-group {
+  margin: var(--we-space-4) 0 var(--we-space-2);
+  font-size: var(--we-text-sm);
+  font-weight: 600;
+  color: var(--we-fg-2);
+}
+.we-shell-font-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.we-shell-font {
+  padding: var(--we-space-2) 0;
+  border-top: 1px solid var(--we-divider);
+}
+.we-shell-font-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0 var(--we-space-2);
+}
+.we-shell-font-licence {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0 var(--we-space-3);
+  margin-top: var(--we-space-1);
+  font-size: var(--we-text-sm);
+}
+.we-shell-font-licence .we-btn {
+  margin-left: var(--we-space-2);
+}
+.we-shell-font-text {
+  max-height: 240px;
+  overflow: auto;
+  margin: var(--we-space-2) 0 0;
+  padding: var(--we-space-2) var(--we-space-3);
+  border: 1px solid var(--we-border);
+  border-radius: var(--we-radius-sm);
+  background: var(--we-bg);
+  font: var(--we-text-xs) / 1.45 var(--we-font-mono);
+  white-space: pre-wrap;
+}
+
+/* ---- Pages and regions --------------------------------------------------- */
+
+.we-shell-scroller {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+.we-shell-pages {
+  position: relative;
+}
+.we-shell-no-pages {
+  padding: var(--we-space-7);
+  text-align: center;
+  color: var(--we-muted);
+}
+.we-shell-page {
+  position: absolute;
+  isolation: isolate;
+  overflow: hidden;
+  background: var(--we-page);
+  box-shadow: var(--we-shadow-page);
+}
+.we-shell-page-img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  user-select: none;
+  -webkit-user-drag: none;
+}
+.we-shell-page-img-pending {
+  opacity: 0;
+}
+/* Vector page: position and size are set when painted (the whole page, or the visible part at large zooms). */
+.we-shell-page-canvas {
+  position: absolute;
+  left: 0;
+  top: 0;
+  display: block;
+  user-select: none;
+}
+.we-shell-page-canvas-pending {
+  visibility: hidden;
+}
+.we-shell-page-skeleton {
+  position: absolute;
+  inset: 0;
+  background:
+    linear-gradient(100deg, transparent 30%, rgba(128, 136, 150, 0.12) 50%, transparent 70%) 0 0 / 300% 100%,
+    repeating-linear-gradient(
+      to bottom,
+      transparent 0,
+      transparent 7%,
+      rgba(128, 136, 150, 0.1) 7%,
+      rgba(128, 136, 150, 0.1) 8.4%
+    );
+  background-clip: content-box;
+  padding: 10% 12%;
+  animation: we-shell-shimmer 1.4s linear infinite;
+}
+@keyframes we-shell-shimmer {
+  from {
+    background-position:
+      100% 0,
+      0 0;
+  }
+  to {
+    background-position:
+      -50% 0,
+      0 0;
+  }
+}
+.we-shell-page-error {
+  position: absolute;
+  left: var(--we-space-3);
+  right: var(--we-space-3);
+  top: var(--we-space-3);
+  z-index: 3;
+  padding: var(--we-space-2) var(--we-space-3);
+  border-left: 3px solid var(--we-danger);
+  border-radius: var(--we-radius-sm);
+  background: #fdecea;
+  color: #1b1d22;
+  font-size: var(--we-text-sm);
+}
+.we-shell-regions {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  user-select: none;
+  cursor: default;
+  outline: none;
+}
+.we-shell-region-hover,
+.we-shell-region-selected,
+.we-shell-region-focus {
+  position: absolute;
+  pointer-events: none;
+}
+.we-shell-region-hover {
+  outline: 1px solid var(--we-page-selection);
+  background: rgba(36, 99, 235, 0.06);
+}
+.we-shell-region-selected {
+  outline: 1px dashed var(--we-page-selection);
+  background: rgba(36, 99, 235, 0.08);
+}
+.we-shell-region-primary {
+  outline: 2px solid var(--we-page-selection);
+}
+/* The keyboard cursor shows only while the layer has keyboard focus. */
+.we-shell-region-focus {
+  display: none;
+  outline: 2px solid var(--we-page-focus-ring);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+.we-shell-regions:focus-visible .we-shell-region-focus {
+  display: block;
+}
+.we-shell-regions:focus-visible:not(:has(.we-shell-region-focus)) {
+  box-shadow: inset 0 0 0 2px var(--we-page-focus-ring);
+}
+.we-shell-region-label {
+  position: absolute;
+  left: -1px;
+  bottom: 100%;
+  max-width: 360px;
+  padding: 0 var(--we-space-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font: var(--we-text-xs) / 16px var(--we-font-mono);
+  color: #ffffff;
+  background: var(--we-page-selection);
+  border-radius: 2px 2px 0 0;
+}
+.we-shell-region-focus .we-shell-region-label {
+  background: var(--we-page-focus-ring);
+  color: #ffffff;
+}
+.we-shell-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  pointer-events: none;
+}
+
+/* ---- Inspector ------------------------------------------------------------ */
+
+.we-shell-link {
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  color: var(--we-accent);
+  text-decoration: underline;
+  cursor: pointer;
+}
+.we-shell-inspector {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.we-shell-inspector-empty {
+  padding: var(--we-space-5);
+  color: var(--we-muted);
+}
+.we-shell-tree-wrap {
+  flex: 1 1 55%;
+  min-height: 120px;
+  display: flex;
+  flex-direction: column;
+  border-bottom: 1px solid var(--we-divider);
+}
+.we-shell-tree-search {
+  display: flex;
+  align-items: center;
+  gap: var(--we-space-3);
+  padding: var(--we-space-3);
+}
+.we-shell-tree-search input {
+  flex: 1;
+  min-width: 0;
+  height: var(--we-control-h);
+  padding: 0 var(--we-space-3);
+  border: 1px solid var(--we-border);
+  border-radius: var(--we-radius);
+  background: var(--we-bg);
+  color: inherit;
+  font: inherit;
+}
+.we-shell-tree-search input:focus {
+  border-color: var(--we-accent);
+}
+.we-shell-tree-search span {
+  font-size: var(--we-text-xs);
+  white-space: nowrap;
+}
+.we-shell-tree {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+.we-shell-tree-row {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 22px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding-right: 6px;
+  white-space: nowrap;
+  cursor: pointer;
+  font-size: var(--we-text-sm);
+}
+.we-shell-tree-row:hover {
+  background: var(--we-hover);
+}
+.we-shell-tree-row-selected {
+  background: var(--we-selected);
+}
+.we-shell-tree-row-primary {
+  box-shadow: inset 2px 0 0 var(--we-accent);
+}
+.we-shell-tree-row-hidden {
+  opacity: 0.55;
+}
+.we-shell-twisty,
+.we-shell-twisty-space {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--we-muted);
+  font-size: 10px;
+  line-height: 16px;
+  text-align: center;
+  cursor: pointer;
+}
+.we-shell-kind {
+  flex: none;
+  padding: 0 var(--we-space-2);
+  border-radius: 3px;
+  font: var(--we-text-xs) / 16px var(--we-font-mono);
+  background: var(--we-hover);
+  color: var(--we-muted);
+}
+.we-shell-tree-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.we-shell-tree-id {
+  flex: none;
+  max-width: 45%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font: var(--we-text-xs) var(--we-font-mono);
+  color: var(--we-muted);
+}
+.we-shell-details {
+  flex: 1 1 45%;
+  min-height: 100px;
+  overflow: auto;
+  padding: var(--we-space-3);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.we-shell-details > * {
+  flex: none;
+}
+.we-shell-details-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.we-shell-details-address {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font: var(--we-text-sm) var(--we-font-mono);
+}
+.we-shell-details-text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  padding: 6px;
+  border-radius: var(--we-radius-sm);
+  background: var(--we-hover);
+  max-height: 140px;
+  overflow: auto;
+}
+.we-shell-members {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--we-text-sm);
+}
+.we-shell-members th,
+.we-shell-members td {
+  text-align: left;
+  vertical-align: top;
+  padding: 2px 6px 2px 0;
+  border-top: 1px solid var(--we-divider);
+}
+.we-shell-members th {
+  font-weight: 500;
+  color: var(--we-muted);
+  white-space: nowrap;
+}
+.we-shell-members td {
+  font-family: var(--we-font-mono);
+  overflow-wrap: anywhere;
+}
+.we-shell-plugin-failed {
+  padding: var(--we-space-2);
+  font-size: var(--we-text-sm);
+  color: var(--we-danger);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .we-shell *,
+  .we-shell *::before,
+  .we-shell *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+.we-shell-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* Narrow editors: the rail and side panel float over the canvas instead of squeezing it. */
+.we-shell-left.is-overlay,
+.we-shell-side.is-overlay {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  z-index: 45;
+  max-width: calc(100% - 48px);
+  box-shadow: var(--we-shadow-3);
+}
+.we-shell-left.is-overlay {
+  left: 0;
+  border-right: 1px solid var(--we-border);
+}
+.we-shell-side.is-overlay {
+  right: 0;
+  border-left: 1px solid var(--we-border);
+}
+
+/* Landing: one-click samples and the engine's first-load line (fixed height: no layout shift). */
+.we-shell-quick {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  align-items: center;
+  gap: var(--we-space-2);
+}
+.we-shell-quick-sample {
+  gap: var(--we-space-2);
+}
+.we-shell-engine-line {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--we-space-2);
+  width: min(320px, 100%);
+  height: 36px;
+  margin-top: var(--we-space-2);
+  font-size: var(--we-text-xs);
+  font-variant-numeric: tabular-nums;
+}
+.we-shell-engine-line .we-shell-progress {
+  width: 100%;
+  height: 4px;
+}

@@ -1,0 +1,234 @@
+[
+ [
+  {
+   "op": "set",
+   "target": "para:~5525e827",
+   "value": {
+    "text": "Harbor Ridge Logistics Ltd"
+   }
+  }
+ ],
+ [
+  {
+   "op": "replace-text",
+   "target": "para:~86bd68b3",
+   "find": "reliably",
+   "replace": "dependably"
+  }
+ ],
+ [
+  {
+   "op": "format",
+   "target": "para:~afc9ca0d",
+   "format": {
+    "font": {
+     "bold": true,
+     "size": 30,
+     "color": "#1F4E79",
+     "name": "Arial"
+    }
+   }
+  }
+ ],
+ [
+  {
+   "op": "format",
+   "target": "para:~5b2c9903",
+   "format": {
+    "paragraph": {
+     "space_before": 6,
+     "space_after": 12,
+     "first_line": 18,
+     "line_spacing": 1.15
+    }
+   }
+  }
+ ],
+ [
+  {
+   "op": "format",
+   "target": "para:~2234330b",
+   "format": {
+    "paragraph": {
+     "style": "Heading3",
+     "page_break_before": false
+    }
+   }
+  }
+ ],
+ [
+  {
+   "op": "insert",
+   "anchor": "para:~5b2c9903",
+   "position": "after",
+   "node": {
+    "kind": "paragraph",
+    "text": "Wolf Review added this paragraph about regional volumes."
+   }
+  }
+ ],
+ [
+  {
+   "op": "format",
+   "target": "para:~f35a854b/span:regional volumes",
+   "format": {
+    "font": {
+     "italic": true,
+     "underline": "single"
+    }
+   }
+  },
+  {
+   "op": "insert-hyperlink",
+   "anchor": "para:~f35a854b",
+   "position": "last-child",
+   "text": " More detail",
+   "url": "https://example.com/volumes",
+   "tooltip": "Volumes"
+  }
+ ],
+ [
+  {
+   "op": "move",
+   "target": "para:~8b208811",
+   "anchor": "para:~2234330b",
+   "position": "after"
+  }
+ ],
+ [
+  {
+   "op": "insert-list-item",
+   "anchor": "para:~a623046f",
+   "position": "after",
+   "text": "Fleet telemetry in every depot.",
+   "level": 0
+  }
+ ],
+ [
+  {
+   "op": "set-list-level",
+   "target": "para:#00000001",
+   "level": 1
+  }
+ ],
+ [
+  {
+   "op": "insert-list-item",
+   "anchor": "para:~2faebd5c",
+   "position": "before",
+   "text": "Cold-chain capacity in four hubs."
+  }
+ ],
+ [
+  {
+   "op": "set",
+   "target": "table:@1/row:@2/cell:@3",
+   "value": {
+    "text": "450.0"
+   }
+  }
+ ],
+ [
+  {
+   "op": "edit-cell",
+   "target": "table:@1/row:@2/cell:@3",
+   "shading": "#FFF2CC",
+   "align": "right",
+   "vertical_align": "center"
+  }
+ ],
+ [
+  {
+   "op": "insert-row",
+   "anchor": "table:@1/row:@3",
+   "position": "after",
+   "cells": [
+    "Fleet utilisation",
+    "81%",
+    "84%",
+    "+3 pts"
+   ]
+  }
+ ],
+ [
+  {
+   "op": "insert-column",
+   "target": "table:@1",
+   "index": 4,
+   "cells": [
+    "Note",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "n/a"
+   ]
+  }
+ ],
+ [
+  {
+   "op": "insert",
+   "anchor": "para:~70f1da5f",
+   "position": "last-child",
+   "node": {
+    "kind": "comment",
+    "text": "Confirm the title before print.",
+    "author": "Reviewer One",
+    "initials": "R1",
+    "created": "2026-01-01T00:00:00Z"
+   }
+  }
+ ],
+ [
+  {
+   "op": "insert",
+   "anchor": "comment:#0",
+   "position": "last-child",
+   "node": {
+    "kind": "reply",
+    "text": "Confirmed with HR.",
+    "author": "Reviewer Two",
+    "initials": "R2",
+    "created": "2026-01-01T00:00:00Z"
+   }
+  }
+ ],
+ [
+  {
+   "op": "set",
+   "target": "para:~60f3b525",
+   "value": {
+    "text": "Chief Executive Officer and Chair"
+   },
+   "track": {
+    "author": "Wolf Review",
+    "created": "2026-01-01T00:00:00Z"
+   }
+  },
+  {
+   "op": "replace-text",
+   "target": "para:~37619c2c",
+   "find": "earlier drafts",
+   "replace": "prior drafts",
+   "track": {
+    "author": "Wolf Review",
+    "created": "2026-01-01T00:00:00Z"
+   }
+  }
+ ],
+ [
+  {
+   "op": "review",
+   "target": "revision:#1",
+   "action": "accept"
+  }
+ ],
+ [
+  {
+   "op": "review",
+   "target": "revision:#2",
+   "action": "reject"
+  }
+ ]
+]

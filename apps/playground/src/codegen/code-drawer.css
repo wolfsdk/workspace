@@ -1,0 +1,120 @@
+.lab-code {
+  display: grid;
+  gap: 12px;
+  padding: var(--pad);
+  background: var(--bg-card);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  font-family: var(--font-sans);
+  min-width: 0;
+}
+
+.lab-code__title {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.lab-code__meta {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 0.875rem;
+  overflow-wrap: anywhere;
+}
+
+.lab-code__tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  border-bottom: 1px solid var(--border);
+}
+
+.lab-code__tab,
+.lab-code__action {
+  font: inherit;
+  font-size: 0.875rem;
+  color: var(--text-muted);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 8px 8px 0 0;
+  padding: 6px 12px;
+  cursor: pointer;
+  transition: color 120ms ease, border-color 120ms ease;
+}
+
+.lab-code__tab:hover,
+.lab-code__action:hover {
+  color: var(--text);
+}
+
+/* Selection is shown by the underline and weight, not by colour alone. */
+.lab-code__tab[aria-selected="true"] {
+  color: var(--text);
+  font-weight: 600;
+  border-color: var(--border-strong);
+  border-bottom: 2px solid var(--accent);
+  margin-bottom: -1px;
+}
+
+.lab-code__action {
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+}
+
+.lab-code__tab:focus-visible,
+.lab-code__action:focus-visible,
+.lab-code__text:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.lab-code__panel {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.lab-code__actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.lab-code__file {
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+  color: var(--text-muted);
+  margin-right: auto;
+}
+
+.lab-code__text {
+  margin: 0;
+  padding: 12px;
+  max-height: 24rem;
+  overflow: auto;
+  background: var(--code-bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+  line-height: 1.5;
+  white-space: pre;
+  tab-size: 2;
+}
+
+.lab-code__notice {
+  margin: 0;
+  min-height: 1.25em;
+  font-size: 0.8125rem;
+  color: var(--text-muted);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .lab-code__tab,
+  .lab-code__action {
+    transition: none;
+  }
+}

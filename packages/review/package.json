@@ -1,0 +1,44 @@
+{
+  "name": "@wolfsdk/review",
+  "version": "0.1.0",
+  "description": "<wolf-review>: review and edit DOCX, XLSX and PPTX in the browser on the Wolf engine",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/wolfsdk/workspace.git",
+    "directory": "packages/review"
+  },
+  "exports": {
+    ".": "./src/index.ts",
+    "./auto": "./src/auto.ts",
+    "./react": "./src/react.ts",
+    "./protocol": "./src/protocol.ts",
+    "./seal": "./src/seal.ts"
+  },
+  "scripts": {
+    "build": "bun scripts/build.ts",
+    "pack": "bun scripts/build.ts --pack",
+    "check": "bun scripts/check.ts",
+    "typecheck": "tsc -p ."
+  },
+  "dependencies": {
+    "@wolfsdk/protocol": "workspace:*",
+    "@wolfsdk/runtime": "workspace:*",
+    "preact": "^10.29.0"
+  },
+  "peerDependencies": {
+    "react": ">=18"
+  },
+  "peerDependenciesMeta": {
+    "react": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@types/react": "^19.1.0",
+    "react": "^19.1.0",
+    "vite": "^8.3.0"
+  }
+}

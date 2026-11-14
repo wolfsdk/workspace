@@ -1,0 +1,727 @@
+/* Review plugin. Colours, type and shape come from the shell tokens (`--we-*`); buttons, chips,
+ * notices and inputs are the shared `we-*` classes. Only layout and the review marks live here. */
+.we-review-panel {
+  font-family: var(--we-font);
+  font-size: var(--we-text-md);
+  line-height: 1.4;
+  color: var(--we-fg);
+  background: var(--we-bg);
+  padding: var(--we-space-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--we-space-3);
+  min-width: 0;
+  box-sizing: border-box;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+.we-review-panel > * {
+  min-width: 0;
+}
+/* Shared buttons wrap and grow in a narrow panel instead of overflowing it. */
+.we-review-panel .we-btn {
+  height: auto;
+  min-height: var(--we-control-h-sm);
+  padding-block: var(--we-space-2);
+  white-space: normal;
+  text-align: left;
+  line-height: 1.25;
+}
+.we-review-nav,
+.we-review-decide,
+.we-review-choice {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--we-space-2);
+}
+.we-review-summary {
+  font-weight: 600;
+}
+.we-review-rev,
+.we-review-muted,
+.we-review-entry-meta {
+  color: var(--we-muted);
+}
+.we-review-entries {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--we-space-3);
+}
+.we-review-entry {
+  border: 1px solid var(--we-border);
+  border-radius: var(--we-radius);
+  padding: var(--we-space-3);
+  background: var(--we-surface);
+  min-width: 0;
+}
+.we-review-entry.we-review-current {
+  border-color: var(--we-accent);
+  box-shadow: 0 0 0 1px var(--we-accent);
+}
+/* After the current revision (redo tail): dashed and quieter, never faded by opacity, so every
+ * label and button keeps its contrast. */
+.we-review-entry.we-review-tail {
+  border-style: dashed;
+  background: var(--we-bg);
+}
+.we-review-entry.we-review-tail .we-review-entry-title {
+  color: var(--we-muted);
+}
+.we-review-entry.we-review-inspected {
+  background: var(--we-bg);
+}
+.we-review-entry-head {
+  display: flex;
+  gap: var(--we-space-2);
+  align-items: flex-start;
+}
+.we-review-panel .we-review-entry-main {
+  flex: 1;
+  min-width: 0;
+  text-align: left;
+  display: flex;
+  flex-direction: column;
+  border: 0;
+  background: transparent;
+  padding: 0;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+.we-review-entry-title {
+  font-weight: 600;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--we-space-2);
+  align-items: center;
+}
+.we-review-decide {
+  margin-top: var(--we-space-2);
+}
+.we-review-choice {
+  margin-top: var(--we-space-2);
+  padding: var(--we-space-2);
+  border: 1px dashed var(--we-border-strong);
+  border-radius: var(--we-radius-sm);
+  align-items: center;
+}
+.we-review-choice-prompt {
+  flex-basis: 100%;
+  margin: 0;
+  font-size: var(--we-text-sm);
+}
+.we-review-changes {
+  list-style: none;
+  margin: var(--we-space-3) 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--we-space-2);
+}
+.we-review-panel .we-review-change-btn {
+  width: 100%;
+  min-width: 0;
+  text-align: left;
+  display: flex;
+  flex-direction: column;
+  gap: var(--we-space-1);
+  padding: var(--we-space-2) var(--we-space-3);
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  background: var(--we-bg);
+  border: 1px solid var(--we-border);
+  border-left: 4px solid var(--we-border-strong);
+  border-radius: var(--we-radius-sm);
+}
+.we-review-panel .we-review-change-btn:hover {
+  background: var(--we-hover);
+}
+.we-review-change.we-review-added .we-review-change-btn {
+  border-left-color: var(--we-added);
+}
+.we-review-change.we-review-modified .we-review-change-btn {
+  border-left-color: var(--we-modified);
+}
+.we-review-change.we-review-removed .we-review-change-btn {
+  border-left-color: var(--we-removed);
+}
+.we-review-change.we-review-moved .we-review-change-btn {
+  border-left-color: var(--we-moved);
+}
+.we-review-change.we-review-selected .we-review-change-btn {
+  outline: 2px solid var(--we-accent);
+}
+.we-review-kind {
+  font-weight: 600;
+}
+.we-review-address {
+  font-family: var(--we-font-mono);
+  font-size: var(--we-text-sm);
+}
+.we-review-values del {
+  color: var(--we-danger);
+}
+.we-review-values ins {
+  color: var(--we-success);
+  text-decoration: none;
+}
+.we-review-offpage {
+  align-self: flex-start;
+}
+/* One block per op of a multi-op change set; its rows nest one level in. */
+.we-review-hunk {
+  list-style: none;
+  border: 1px solid var(--we-divider);
+  border-left: 3px solid var(--we-border-strong);
+  border-radius: var(--we-radius-sm);
+  padding: var(--we-space-2);
+  min-width: 0;
+}
+.we-review-hunk.we-review-d-approve {
+  border-left-color: var(--we-success);
+}
+.we-review-hunk.we-review-d-reject {
+  border-left-color: var(--we-danger);
+}
+.we-review-hunk-head {
+  display: flex;
+  flex-direction: column;
+  gap: var(--we-space-1);
+  min-width: 0;
+}
+.we-review-hunk-title {
+  font-weight: 600;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--we-space-2);
+  align-items: center;
+}
+.we-review-panel .we-review-hunk-changes {
+  margin-top: var(--we-space-2);
+}
+.we-review-hunk-empty {
+  margin-top: var(--we-space-2);
+}
+.we-review-coupled {
+  display: flex;
+  flex-direction: column;
+  gap: var(--we-space-2);
+}
+.we-review-coupled p {
+  margin: 0;
+}
+.we-review-coupled-title {
+  font-weight: 600;
+}
+.we-review-coupled-list,
+.we-review-blockers {
+  margin: 0;
+  padding-left: var(--we-space-4);
+}
+.we-review-blockers {
+  color: var(--we-muted);
+}
+.we-review-panel .we-review-submit {
+  align-self: flex-start;
+}
+/* A disabled Submit stays legible: the outlined look of a neutral button, not a faded fill. */
+.we-review-panel .we-review-submit:disabled {
+  opacity: 1;
+  border-color: var(--we-border);
+  background: var(--we-surface);
+  color: var(--we-muted);
+}
+.we-review-section {
+  border-top: 1px solid var(--we-divider);
+  padding-top: var(--we-space-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--we-space-2);
+}
+.we-review-section h3 {
+  margin: 0;
+  font-size: var(--we-text-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--we-muted);
+}
+.we-review-manual {
+  width: 100%;
+  box-sizing: border-box;
+  height: auto;
+  padding-block: var(--we-space-2);
+  font-family: var(--we-font-mono);
+  font-size: var(--we-text-sm);
+  resize: vertical;
+}
+.we-review-json {
+  max-height: 240px;
+  overflow: auto;
+  font: var(--we-text-xs) var(--we-font-mono);
+  background: var(--we-surface);
+  padding: var(--we-space-2);
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.we-review-layer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+.we-review-box {
+  position: absolute;
+  box-sizing: border-box;
+  --we-review-border: 2px;
+  border: var(--we-review-border) solid var(--we-mark);
+  pointer-events: auto;
+  cursor: pointer;
+  border-radius: 2px;
+  --we-mark: var(--we-page-selection, #2463eb);
+  background: color-mix(in srgb, var(--we-mark) 14%, transparent);
+}
+.we-review-box:hover,
+.we-review-box.we-review-selected {
+  z-index: 1;
+}
+/* The focused outline draws over its neighbours, with its tag. */
+.we-review-box:focus {
+  z-index: 2;
+}
+.we-review-box.we-review-side-before {
+  border-style: dashed;
+}
+.we-review-box.we-review-added {
+  --we-mark: var(--we-page-added, #1a7f44);
+}
+.we-review-box.we-review-modified {
+  --we-mark: var(--we-page-modified, #a35c00);
+}
+.we-review-box.we-review-removed {
+  --we-mark: var(--we-page-removed, #c8312b);
+}
+.we-review-box.we-review-moved {
+  --we-mark: var(--we-page-moved, #6d3fc4);
+}
+.we-review-box.we-review-selected {
+  box-shadow: 0 0 0 2px var(--we-page-focus-ring, #0b4fd6);
+}
+/* Keyboard focus: the shell's page focus ring apart from the box, over a light halo of the same
+ * colour (the panel's sign of focus on a selected row). The selected ring touches the box and has
+ * no halo, so focused, selected, and both read apart. Not after a click (`:focus-visible`). */
+.we-review-layer .we-review-box:focus-visible {
+  outline: 2px solid var(--we-page-focus-ring, #0b4fd6);
+  outline-offset: 2px;
+  box-shadow: 0 0 0 7px color-mix(in srgb, var(--we-page-focus-ring, #0b4fd6) 25%, transparent);
+}
+.we-review-layer .we-review-box.we-review-selected:focus-visible {
+  outline-offset: 4px;
+  box-shadow:
+    0 0 0 2px var(--we-page-focus-ring, #0b4fd6),
+    0 0 0 9px color-mix(in srgb, var(--we-page-focus-ring, #0b4fd6) 25%, transparent);
+}
+/* Faded outline; the tag stays opaque so its text keeps its contrast, struck through. */
+.we-review-box.we-review-rejected {
+  border-color: color-mix(in srgb, var(--we-mark) 60%, transparent);
+  background: color-mix(in srgb, var(--we-mark) 8%, transparent);
+}
+.we-review-box.we-review-rejected > .we-review-tag {
+  text-decoration: line-through;
+}
+/* A later outline of the same object: the first one's fill already covers it. */
+.we-review-box.we-review-stacked {
+  background: none;
+}
+/* Placed by overlay.tsx (`placeTags`) relative to the box. The page is white in every theme, and
+ * white text on each default page mark is at least 5:1 (see the shell README). */
+.we-review-tag {
+  position: absolute;
+  font: var(--we-text-xs, 11px)/14px var(--we-font, system-ui, sans-serif);
+  padding: 0 var(--we-space-2, 4px);
+  color: #fff;
+  background: var(--we-mark);
+  border-radius: 2px;
+  white-space: nowrap;
+}
+/* A tag with no free place, or the repeat of an identical outline's tag at the same place: shown
+ * only while its box is hovered or focused or its change selected (from the page or the panel). */
+.we-review-tag.we-review-tag-on-demand {
+  visibility: hidden;
+}
+.we-review-box:hover > .we-review-tag-on-demand,
+.we-review-box:focus > .we-review-tag-on-demand,
+.we-review-box.we-review-selected > .we-review-tag-on-demand {
+  visibility: visible;
+}
+
+.we-review-group {
+  list-style: none;
+  padding: 6px 8px 2px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--we-muted, #666);
+}
+.we-review-detail {
+  margin: 2px 0 4px 12px;
+  padding: 0;
+  list-style: none;
+}
+.we-review-detail .we-review-record-selected {
+  outline: 2px solid var(--we-accent);
+  outline-offset: 1px;
+}
+
+/* Long labels clamp to three lines, addresses to one; the full text is in the row's title. */
+.we-review-panel .we-review-kind {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
+  overflow: hidden;
+}
+.we-review-panel .we-review-address {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+.we-review-panel .we-review-values {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+}
+.we-review-panel .we-review-change-btn:focus-visible {
+  outline: 2px solid var(--we-accent, #2463eb);
+  outline-offset: 2px;
+}
+.we-review-panel .we-review-change.we-review-selected .we-review-change-btn:focus-visible {
+  outline-offset: 3px;
+  box-shadow: 0 0 0 5px color-mix(in srgb, var(--we-accent, #2463eb) 25%, transparent);
+}
+.we-review-arrow {
+  white-space: nowrap;
+}
+/* Unexplained package parts: the status line keeps its height so checking and ready do not jump. */
+.we-review-parts-line {
+  margin: 0;
+  min-height: 1.5em;
+  line-height: 1.5;
+  color: var(--we-muted);
+  font-size: var(--we-text-sm);
+}
+.we-review-parts-failed,
+.we-review-parts-warn {
+  display: flex;
+  flex-direction: column;
+  gap: var(--we-space-2);
+}
+.we-review-parts-failed p,
+.we-review-parts-warn p {
+  margin: 0;
+}
+.we-review-parts-failed .we-btn {
+  align-self: flex-start;
+}
+.we-review-parts-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: var(--we-space-2);
+}
+.we-review-part {
+  display: flex;
+  flex-direction: column;
+  gap: var(--we-space-1);
+  padding-left: var(--we-space-2);
+  border-left: 3px solid var(--we-warning);
+}
+.we-review-part--unreported {
+  border-left-color: var(--we-danger);
+}
+.we-review-part--unreported > p {
+  color: var(--we-danger);
+}
+.we-review-part-headline {
+  font-weight: 600;
+}
+.we-review-part-name {
+  font-family: var(--we-font-mono);
+  font-size: var(--we-text-xs);
+  color: var(--we-muted);
+  overflow-wrap: anywhere;
+}
+.we-review-part-detail {
+  margin: 0;
+  padding-left: var(--we-space-4);
+  font-size: var(--we-text-xs);
+}
+.we-review-part-ack {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--we-space-1);
+  font-size: var(--we-text-sm);
+  cursor: pointer;
+}
+.we-review-part-ack input:focus-visible,
+.we-review-parts-failed .we-btn:focus-visible {
+  outline: 2px solid var(--we-accent, #2463eb);
+  outline-offset: 2px;
+}
+
+/* Workbook main view (`SheetReviewView`): a read-only grid, positioned in pixels from the engine's
+ * column widths and row heights, with the changed cells marked by the reviewer's decision. */
+.we-rv-sheet {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--we-bg);
+  color: var(--we-fg);
+  font-family: var(--we-font);
+  font-size: var(--we-text-md);
+}
+.we-rv-sheet-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--we-space-3);
+  padding: var(--we-space-2) var(--we-space-3);
+  background: var(--we-surface);
+  border-bottom: 1px solid var(--we-divider);
+  min-width: 0;
+}
+.we-rv-sheet-toggle {
+  flex: none;
+  display: inline-flex;
+  gap: var(--we-space-1);
+}
+.we-rv-sheet-ref {
+  flex: none;
+  min-width: 5em;
+  padding: 0 var(--we-space-3);
+  font-family: var(--we-font-mono);
+  font-size: var(--we-text-sm);
+  color: var(--we-muted);
+}
+.we-rv-sheet-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--we-font-mono);
+  font-size: var(--we-text-sm);
+}
+.we-rv-sheet-legend {
+  flex: none;
+  display: inline-flex;
+  gap: var(--we-space-2);
+}
+.we-rv-sheet-chip,
+.we-rv-sheet-badge {
+  border: 1px solid var(--we-border);
+  border-radius: var(--we-radius-sm);
+  padding: 0 var(--we-space-3);
+  font-size: var(--we-text-xs);
+  line-height: 1.6;
+  white-space: nowrap;
+}
+.we-rv-sheet-badge {
+  margin-left: var(--we-space-3);
+  padding: 0 var(--we-space-2);
+}
+.we-rv-sheet-chip.we-rv-d-pending,
+.we-rv-sheet-badge.we-rv-d-pending {
+  color: var(--we-warning);
+  background: var(--we-warning-bg);
+  border-color: var(--we-warning);
+}
+.we-rv-sheet-chip.we-rv-d-approve,
+.we-rv-sheet-badge.we-rv-d-approve {
+  color: var(--we-success);
+  background: var(--we-success-bg);
+  border-color: var(--we-success);
+}
+.we-rv-sheet-chip.we-rv-d-reject,
+.we-rv-sheet-badge.we-rv-d-reject {
+  color: var(--we-danger);
+  background: var(--we-danger-bg);
+  border-color: var(--we-danger);
+}
+.we-rv-sheet-main,
+.we-rv-sheet-pages {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.we-rv-sheet-pages {
+  background: var(--we-canvas);
+}
+.we-rv-sheet-scroll {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  position: relative;
+  background: var(--we-page);
+  color: #1b1d22;
+}
+.we-rv-sheet-scroll[aria-busy="true"] {
+  opacity: 0.7;
+}
+.we-rv-sheet-colheads {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  background: var(--we-surface);
+}
+.we-rv-sheet-body {
+  position: relative;
+  cursor: cell;
+}
+.we-rv-sheet-rowheads {
+  position: sticky;
+  left: 0;
+  z-index: 2;
+  background: var(--we-surface);
+}
+.we-rv-sheet-corner,
+.we-rv-sheet-head-cell {
+  position: absolute;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--we-surface);
+  border-right: 1px solid var(--we-border);
+  border-bottom: 1px solid var(--we-border);
+  color: var(--we-muted);
+  font-size: var(--we-text-xs);
+  user-select: none;
+  overflow: hidden;
+}
+.we-rv-sheet-corner {
+  left: 0;
+  top: 0;
+}
+.we-rv-sheet-rowheads > .we-rv-sheet-head-cell {
+  left: 0;
+}
+.we-rv-sheet-colheads > .we-rv-sheet-head-cell {
+  top: 0;
+}
+.we-rv-sheet-head-cell--on {
+  background: var(--we-accent-soft);
+  color: var(--we-fg);
+  font-weight: 600;
+}
+.we-rv-sheet-vline,
+.we-rv-sheet-hline {
+  position: absolute;
+  background: var(--we-divider);
+  pointer-events: none;
+}
+.we-rv-sheet-vline {
+  top: 0;
+  bottom: 0;
+  width: 1px;
+}
+.we-rv-sheet-hline {
+  right: 0;
+  height: 1px;
+}
+.we-rv-sheet-cell {
+  position: absolute;
+  box-sizing: border-box;
+  padding: 0 var(--we-space-2);
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: var(--we-text-sm);
+}
+.we-rv-sheet-cell--right {
+  justify-content: flex-end;
+}
+.we-rv-sheet-cell--center {
+  justify-content: center;
+}
+.we-rv-sheet-cell--changed {
+  outline: 2px solid var(--we-warning);
+  outline-offset: -2px;
+  box-shadow: inset 0 0 0 100px rgba(255, 244, 217, 0.55);
+}
+.we-rv-sheet-cell--changed.we-rv-d-approve {
+  outline-color: var(--we-success);
+  box-shadow: inset 0 0 0 100px rgba(230, 244, 236, 0.6);
+}
+.we-rv-sheet-cell--changed.we-rv-d-reject {
+  outline-color: var(--we-danger);
+  box-shadow: inset 0 0 0 100px rgba(253, 236, 234, 0.6);
+}
+.we-rv-sheet-cell--focus {
+  outline: 2px solid var(--we-focus);
+  outline-offset: -2px;
+  z-index: 1;
+}
+.we-rv-sheet-tabs {
+  flex: none;
+  display: flex;
+  gap: var(--we-space-1);
+  padding: var(--we-space-2) var(--we-space-3) 0;
+  overflow-x: auto;
+  background: var(--we-surface);
+  border-top: 1px solid var(--we-divider);
+}
+.we-rv-sheet-tab {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  padding: var(--we-space-2) var(--we-space-4);
+  border: 1px solid transparent;
+  border-bottom: 0;
+  border-radius: var(--we-radius-sm) var(--we-radius-sm) 0 0;
+  background: transparent;
+  color: var(--we-fg-2);
+  font: inherit;
+  cursor: pointer;
+}
+.we-rv-sheet-tab:hover {
+  background: var(--we-hover);
+}
+.we-rv-sheet-tab[aria-selected="true"] {
+  background: var(--we-bg);
+  border-color: var(--we-border);
+  color: var(--we-fg);
+  font-weight: 600;
+}
+.we-rv-sheet-tab:focus-visible {
+  outline: 2px solid var(--we-focus);
+  outline-offset: -2px;
+}
+.we-rv-sheet-note {
+  flex: none;
+  margin: 0;
+  padding: var(--we-space-3) var(--we-space-4);
+  background: var(--we-info-bg);
+  color: var(--we-fg);
+  font-size: var(--we-text-sm);
+}
+.we-rv-sheet-note--error {
+  background: var(--we-danger-bg);
+  color: var(--we-danger);
+}

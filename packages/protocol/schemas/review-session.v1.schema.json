@@ -1,0 +1,302 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://wolfsdk.com/schemas/review-session.v1.schema.json",
+  "title": "Wolf review session file",
+  "description": "Decisions on every batch a reviewer saw for one document: per batch (entry) the decision, its hunks and one wolfsuite.review-decision.v1 document binding the per-change decisions to the batch's diff identity. Written by the @wolfsdk/review panel and by any surface that reviews recorded batches.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "contract",
+    "document",
+    "original_sha256",
+    "final_sha256",
+    "current_sha256",
+    "summary",
+    "complete",
+    "decided_at",
+    "entries",
+    "parts"
+  ],
+  "properties": {
+    "contract": {
+      "const": "wolfsdk.review-session.v1"
+    },
+    "document": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "format"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "format": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "original_sha256": {
+      "description": "sha256 of the file before the first entry.",
+      "$ref": "#/$defs/sha256"
+    },
+    "final_sha256": {
+      "description": "sha256 after the last entry still in history.",
+      "$ref": "#/$defs/sha256"
+    },
+    "current_sha256": {
+      "description": "sha256 of the revision the reviewer was on when the file was written.",
+      "$ref": "#/$defs/sha256"
+    },
+    "summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["approve", "reject", "undecided"],
+      "properties": {
+        "approve": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "reject": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "undecided": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "complete": {
+      "description": "True when no entry is undecided.",
+      "type": "boolean"
+    },
+    "decided_at": {
+      "$ref": "#/$defs/timestamp"
+    },
+    "engine": {
+      "description": "The engine module the entries were applied with, when the writer knows it.",
+      "$ref": "#/$defs/engine"
+    },
+    "entries": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/entry"
+      }
+    },
+    "parts": {
+      "description": "Package parts of the current revision against the original file; null when not checked.",
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "$ref": "#/$defs/parts"
+        }
+      ]
+    }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "timestamp": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
+    },
+    "decision": {
+      "enum": ["approve", "reject", "pending"]
+    },
+    "engine": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "commit", "moduleSha256", "moduleBytes", "builtAt"],
+      "properties": {
+        "version": {
+          "type": "string"
+        },
+        "commit": {
+          "type": "string"
+        },
+        "moduleSha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "moduleBytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "builtAt": {
+          "type": "string"
+        }
+      }
+    },
+    "entry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "revision",
+        "label",
+        "source",
+        "applied_at",
+        "decision",
+        "in_history",
+        "base_sha256",
+        "result_sha256",
+        "hunks",
+        "rejected_ops",
+        "review_decision"
+      ],
+      "properties": {
+        "revision": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "label": {
+          "type": "string"
+        },
+        "source": {
+          "type": "string"
+        },
+        "applied_at": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "decision": {
+          "$ref": "#/$defs/decision"
+        },
+        "in_history": {
+          "description": "False for a batch the reviewer took out of history (undone).",
+          "type": "boolean"
+        },
+        "base_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "result_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "hunks": {
+          "description": "One per proposed operation (op: null holds changes no operation claims); change_indices index review_decision.decisions.",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["op", "decision", "change_indices"],
+            "properties": {
+              "op": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "type": "integer",
+                    "minimum": 0
+                  }
+                ]
+              },
+              "decision": {
+                "$ref": "#/$defs/decision"
+              },
+              "change_indices": {
+                "type": "array",
+                "items": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              }
+            }
+          }
+        },
+        "rejected_ops": {
+          "description": "Operations removed from the batch, at their index in the batch as proposed.",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["index", "op"],
+            "properties": {
+              "index": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "op": {
+                "type": "object",
+                "required": ["op"],
+                "properties": {
+                  "op": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                }
+              }
+            }
+          }
+        },
+        "review_decision": {
+          "$ref": "https://wolfsuite.dev/schemas/review-decision.v1.schema.json"
+        },
+        "conflict": {
+          "description": "The batch no longer applies after an earlier entry was rejected; the entry is pending.",
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["code", "message"],
+          "properties": {
+            "code": {
+              "type": "string",
+              "minLength": 1
+            },
+            "message": {
+              "type": "string"
+            }
+          }
+        },
+        "verified": {
+          "description": "A recorded batch re-executed live: whether it reached the recorded result sha256.",
+          "enum": ["tape-match", "tape-mismatch"]
+        }
+      }
+    },
+    "parts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["checked_sha256", "changed", "recompressed", "unexplained"],
+      "properties": {
+        "checked_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "changed": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "recompressed": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "unexplained": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name", "status", "verdict", "acknowledged"],
+            "properties": {
+              "name": {
+                "type": "string",
+                "minLength": 1
+              },
+              "status": {
+                "enum": ["added", "removed", "changed"]
+              },
+              "verdict": {
+                "enum": ["explained", "unnamed", "unreported"]
+              },
+              "acknowledged": {
+                "type": "boolean"
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

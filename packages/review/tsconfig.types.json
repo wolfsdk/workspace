@@ -1,0 +1,26 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "declaration": true,
+    "emitDeclarationOnly": true,
+    "rootDir": "../..",
+    "outDir": "dist/.types-tmp",
+    "paths": {
+      "@wolfsdk/protocol": ["../protocol/src/index.ts"],
+      "@wolfsdk/protocol/contract": ["../protocol/src/contract.ts"],
+      "@wolfsdk/protocol/reactor": ["../protocol/src/reactor.ts"],
+      "@wolfsdk/protocol/session": ["../protocol/src/session/index.ts"],
+      "@wolfsdk/runtime/client": ["../runtime/src/reactor/client.ts"],
+      "@wolfsdk/runtime/worker": ["../runtime/src/reactor/worker.ts"],
+      "@wolfsdk/runtime/engine": ["../runtime/src/reactor/engine.ts"],
+      "@wolfsdk/runtime/node": ["../runtime/src/reactor/node.ts"],
+      "@wolfsdk/runtime/loader": ["../runtime/src/loader.ts"],
+      "@wolfsdk/runtime/vector": ["../runtime/src/vector/index.ts"],
+      "@wolfsdk/runtime/seal": ["../runtime/src/seal/index.ts"],
+      "@wolfsdk/runtime/seal/policy": ["../runtime/src/seal/policy.ts"],
+      "@wolfsdk/runtime/seal/lockdown": ["../runtime/src/seal/lockdown.ts"]
+    }
+  },
+  "include": ["src/index.ts", "src/auto.ts", "src/react.ts", "src/protocol.ts", "src/seal.ts"]
+}

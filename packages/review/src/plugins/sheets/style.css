@@ -1,0 +1,389 @@
+/* Sheets plugin. Colours, type, spacing and shape come from the shell tokens (`--we-*`);
+ * buttons, inputs, selects, separators, chips, notices and menus are the shared `we-*`
+ * classes. Only layout and the sheet-specific pieces (tab strip, grid, print preview)
+ * live here. The cell area (canvas, in-cell editor, print pages) is the document: it keeps
+ * the workbook's own colours in every theme, with the theme-independent page tokens for
+ * selection marks. */
+
+.we-sheets-main {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  background: var(--we-bg);
+  color: var(--we-fg);
+  font-family: var(--we-font);
+  font-size: var(--we-text-md);
+}
+
+/* Formula bar: name box, fx, contents, view toggle. */
+.we-sheets-bar,
+.we-sheets-linkbar {
+  display: flex;
+  align-items: center;
+  gap: var(--we-space-2);
+  padding: var(--we-space-2);
+  border-bottom: 1px solid var(--we-border);
+  background: var(--we-surface);
+}
+
+.we-sheets-bar .we-input,
+.we-sheets-linkbar .we-input {
+  height: var(--we-control-h-sm);
+  padding: 0 var(--we-space-2);
+}
+
+.we-sheets-namebox {
+  flex: none;
+  width: 110px;
+}
+
+.we-sheets-fx {
+  padding: 0 var(--we-space-1);
+  color: var(--we-muted);
+  font-style: italic;
+}
+
+.we-sheets-formula {
+  flex: 1;
+  font-family: var(--we-font-mono);
+}
+
+.we-sheets-viewtoggle {
+  display: flex;
+  gap: var(--we-space-1);
+}
+
+/* Toolbar: shared small buttons and selects in one dense row. */
+.we-sheets-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--we-space-1);
+  font-family: var(--we-font);
+  font-size: var(--we-text-md);
+  color: var(--we-fg);
+}
+
+.we-sheets-toolbar .we-select {
+  height: var(--we-control-h-sm);
+  font-size: var(--we-text-sm);
+}
+
+/* Colour pickers: a native colour input with its label, framed like a control. */
+.we-sheets-color {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--we-space-1);
+  height: var(--we-control-h-sm);
+  padding: 0 var(--we-space-1) 0 var(--we-space-2);
+  border: 1px solid var(--we-border);
+  border-radius: var(--we-radius);
+  background: var(--we-bg);
+  font-size: var(--we-text-sm);
+}
+
+.we-sheets-color input {
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: none;
+  background: none;
+  cursor: pointer;
+}
+
+.we-sheets-color:has(input:disabled) {
+  opacity: 0.5;
+}
+
+.we-sheets-color input:disabled {
+  cursor: default;
+}
+
+/* Banners above the grid: shared notices, laid out as a strip. */
+.we-sheets-banner {
+  align-items: center;
+  justify-content: space-between;
+  margin: var(--we-space-2) var(--we-space-2) 0;
+}
+
+.we-sheets-banner + :not(.we-sheets-banner) {
+  margin-top: var(--we-space-2);
+}
+
+.we-sheets-code {
+  font-family: var(--we-font-mono);
+}
+
+/* Grid. */
+.we-sheets-grid {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  outline: none;
+  background: var(--we-page);
+}
+.we-sheets-grid:focus-visible {
+  box-shadow: inset 0 0 0 2px var(--we-focus);
+}
+
+.we-sheets-scroller {
+  position: absolute;
+  inset: 0;
+  overflow: auto;
+  touch-action: none;
+  scrollbar-color: var(--we-border-strong) var(--we-surface);
+}
+
+.we-sheets-spacer {
+  width: 1px;
+  height: 1px;
+}
+
+.we-sheets-canvas {
+  position: absolute;
+  left: 0;
+  top: 0;
+  pointer-events: none;
+}
+
+/* Carries the tokens the canvas paints with; a change runs a transition and the grid
+ * repaints (Grid.tsx). The 1 ms is literal so reduced motion does not zero it. */
+.we-sheets-theme-probe {
+  position: absolute;
+  width: 0;
+  height: 0;
+  overflow: hidden;
+  visibility: hidden;
+  pointer-events: none;
+  color: var(--we-fg);
+  background-color: var(--we-surface);
+  border-style: solid;
+  border-width: 0;
+  border-top-color: var(--we-muted);
+  border-right-color: var(--we-border);
+  border-bottom-color: var(--we-border-strong);
+  border-left-color: var(--we-accent);
+  outline-color: var(--we-page-selection);
+  text-decoration-color: var(--we-selected);
+  caret-color: var(--we-on-accent);
+  column-rule-color: var(--we-page);
+  transition-property:
+    color, background-color, border-top-color, border-right-color, border-bottom-color, border-left-color,
+    outline-color, text-decoration-color, caret-color, column-rule-color;
+  transition-duration: 1ms;
+}
+
+/* In-cell editor: on the cell area, so workbook colours and the page selection token. */
+.we-sheets-editor {
+  position: absolute;
+  z-index: 2;
+  box-sizing: border-box;
+  margin: 0;
+  padding: 2px var(--we-space-1);
+  border: 2px solid var(--we-page-selection);
+  font:
+    13px system-ui,
+    -apple-system,
+    "Segoe UI",
+    Roboto,
+    Helvetica,
+    Arial,
+    sans-serif;
+  line-height: 16px;
+  resize: none;
+  overflow: hidden;
+  white-space: pre;
+  outline: none;
+  background: #ffffff;
+  color: #000000;
+  box-shadow: var(--we-shadow-2);
+}
+
+/* Accessible text of the drawn cells (screen readers and tests). */
+.we-sheets-mirror {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.we-sheets-empty {
+  padding: var(--we-space-6);
+  color: var(--we-muted);
+}
+
+/* Print preview: engine page images on the canvas colour. */
+.we-sheets-print {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: var(--we-space-5);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--we-space-5);
+  background: var(--we-canvas);
+}
+
+.we-sheets-print-empty {
+  justify-content: center;
+  color: var(--we-muted);
+}
+
+.we-sheets-page {
+  margin: 0;
+}
+
+.we-sheets-page img,
+.we-sheets-page-loading {
+  display: block;
+  background: var(--we-page);
+  box-shadow: var(--we-shadow-page);
+}
+
+.we-sheets-page-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #6b707c;
+}
+
+.we-sheets-page-error {
+  box-sizing: border-box;
+}
+
+.we-sheets-page figcaption {
+  padding-top: var(--we-space-1);
+  text-align: center;
+  font-size: var(--we-text-sm);
+  color: var(--we-muted);
+}
+
+/* Bottom strip: sheet tabs and selection statistics. */
+.we-sheets-bottom {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--we-space-4);
+  min-height: 30px;
+  padding: 0 var(--we-space-2);
+  border-top: 1px solid var(--we-border);
+  background: var(--we-surface);
+  color: var(--we-fg);
+  font-family: var(--we-font);
+  font-size: var(--we-text-md);
+}
+
+.we-sheets-tabs {
+  display: flex;
+  align-items: stretch;
+  gap: 2px;
+  min-width: 0;
+  overflow-x: auto;
+}
+
+.we-sheets-tab {
+  padding: var(--we-space-1) var(--we-space-4);
+  border: 1px solid transparent;
+  border-top: none;
+  border-radius: 0 0 var(--we-radius-sm) var(--we-radius-sm);
+  background: transparent;
+  color: var(--we-fg-2);
+  font: inherit;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background-color var(--we-duration) var(--we-ease);
+}
+
+.we-sheets-tab:hover {
+  background: var(--we-hover);
+}
+
+.we-sheets-tab-active {
+  border-color: var(--we-border);
+  background: var(--we-bg);
+  color: var(--we-accent);
+  font-weight: 600;
+  box-shadow: inset 0 -2px 0 var(--we-accent);
+}
+
+.we-sheets-tab-active:hover {
+  background: var(--we-bg);
+}
+
+.we-sheets-tab-hidden {
+  color: var(--we-muted);
+  font-style: italic;
+}
+
+.we-sheets-tab-drag {
+  opacity: 0.5;
+}
+
+.we-sheets-tab-note {
+  font-size: var(--we-text-xs);
+}
+
+.we-sheets-tab-input {
+  width: 120px;
+  height: var(--we-control-h-sm);
+  align-self: center;
+  border-color: var(--we-accent);
+}
+
+.we-sheets-add {
+  align-self: center;
+  margin-left: var(--we-space-2);
+}
+
+.we-sheets-status {
+  display: flex;
+  gap: var(--we-space-4);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.we-sheets-muted {
+  color: var(--we-muted);
+}
+
+/* Context menus (tabs, cells, headers): the shared menu, fixed at the pointer. */
+.we-sheets-menu {
+  position: fixed;
+  z-index: 20;
+}
+
+.we-sheets-menu-up {
+  transform: translateY(-100%);
+}
+
+.we-sheets-menu > button:focus-visible {
+  background: var(--we-hover);
+}
+
+/* Link bar. */
+.we-sheets-linkbar {
+  flex-wrap: wrap;
+}
+
+.we-sheets-linkbar-label {
+  color: var(--we-muted);
+}
+
+.we-sheets-linkbar-input {
+  flex: 1 1 260px;
+  min-width: 180px;
+}
+
+.we-sheets-linkbar-tip {
+  flex: 0 1 180px;
+}
+
+.we-sheets-linkbar-error {
+  flex-basis: 100%;
+  color: var(--we-danger);
+}

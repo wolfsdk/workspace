@@ -1,0 +1,22 @@
+{
+  "name": "@wolfsdk/packs",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@wolfsdk/protocol": "workspace:*",
+    "@wolfsdk/server": "workspace:*"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/wolfsdk/workspace.git",
+    "directory": "packages/packs"
+  }
+}

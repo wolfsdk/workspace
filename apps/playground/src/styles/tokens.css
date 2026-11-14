@@ -1,0 +1,85 @@
+/*
+ * Design tokens for the Lab, copied from wolfsdk.com
+ * (wolfsuite engines/wolfxl/www/app/globals.css, :root, at d904e6174ace).
+ * Change a value here only when the site changes it.
+ */
+@font-face {
+  font-family: "Archivo";
+  src: url("./archivo-variable.woff2") format("woff2");
+  font-weight: 100 900;
+  font-stretch: 62% 125%;
+  font-display: swap;
+}
+
+:root {
+  --primary: #eef1f5;
+  --primary-mid: #d4d4d8;
+  --bg: #050506;
+  --bg-card: #0d0d0e;
+  --text: #eef1f5;
+  --text-muted: #9a9aa0;
+  --border: rgba(238, 241, 245, 0.13);
+  --border-strong: rgba(238, 241, 245, 0.3);
+  --code-bg: #111113;
+  --shadow: 0 1px 0 0 rgba(255, 255, 255, 0.03);
+  --shadow-lg: 0 0 0 1px rgba(255, 255, 255, 0.06), 0 20px 40px -24px rgba(0, 0, 0, 0.9);
+  --pad: clamp(16px, 2.2vw, 32px);
+  --bar: 66px;
+  --radius: 14px;
+
+  /* The one lit surface on a page: a paper sheet that shows the document itself. */
+  --paper: #f1efea;
+  --paper-ink: #0d0d0e;
+  --paper-muted: #5f5e5a;
+  --paper-rule: rgba(13, 13, 14, 0.15);
+
+  /* One fixed color per document format, used one at a time. */
+  --fmt-docx: #4c9bff;
+  --fmt-xl: #3fcf7f;
+  --fmt-ppt: #f97316;
+  --fmt-pdf: #f0507a;
+  --fmt-render: #a585ff;
+
+  --accent: var(--text);
+  --accent-hover: color-mix(in oklab, var(--text) 80%, #fff);
+
+  /* Package verdicts. Always paired with a pattern or label, never colour alone. */
+  --verdict-identical: #3a3d42;
+  --verdict-recompressed: #6b7f99;
+  --verdict-equivalent: #8a7fb8;
+  --verdict-changed: #f5b83d;
+  --verdict-removed: #f0507a;
+  --verdict-added: #3fcf7f;
+
+  /* The vault has no network: no web fonts beyond the bundled Archivo. */
+  --font-sans: "Archivo", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-sans);
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}

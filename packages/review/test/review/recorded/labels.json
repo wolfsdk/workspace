@@ -1,0 +1,257 @@
+{
+ "x-col-width": [
+  "Column A width 26 -> 30"
+ ],
+ "x-col-width-range": [
+  "Column B width 10 -> 12",
+  "Column C width default -> 12",
+  "Column D width 16.25 -> 12",
+  "Column E width 22 -> 12"
+ ],
+ "x-row-height": [
+  "Row 3 height default -> 40"
+ ],
+ "x-hide-col": [
+  "Column B hidden"
+ ],
+ "x-hide-row": [
+  "Row 4 hidden"
+ ],
+ "x-show-col": [
+  "Column B shown"
+ ],
+ "x-merge": [
+  "Cells merged: D1:E2"
+ ],
+ "x-unmerge": [
+  "Cells unmerged: B2:D4"
+ ],
+ "x-freeze": [
+  "Freeze panes set"
+ ],
+ "x-unfreeze": [
+  "Freeze panes removed"
+ ],
+ "x-link-url": [
+  "Link added on A1"
+ ],
+ "x-link-location": [
+  "Link added on A1"
+ ],
+ "x-link-remove": [
+  "Link removed on A1"
+ ],
+ "x-rename": [
+  "Formula changed (cell)",
+  "Formula changed (cell)",
+  "Sheet renamed Regions -> Areas"
+ ],
+ "x-sheet-copy": [
+  "added sheet"
+ ],
+ "x-sheet-new": [
+  "added sheet"
+ ],
+ "x-sheet-move": [
+  "Sheet sheet:#1 moved after Summary"
+ ],
+ "x-recalculate": [
+  "Recalculated 169 cells"
+ ],
+ "x-sort": [
+  "Sorted: 4 rows reordered"
+ ],
+ "x-set-value": [
+  "Value changed (cell)"
+ ],
+ "x-delete-cells": [
+  "removed cell"
+ ],
+ "x-insert-row": [
+  "Formula changed (cell)",
+  "Formula changed (cell)",
+  "Row inserted before 3"
+ ],
+ "x-delete-col": [
+  "Formula changed (cell)",
+  "Formula changed (cell)",
+  "Column A deleted",
+  "Row 8900 added",
+  "Row 5400 added",
+  "Row 3800 added",
+  "Row 1300 added",
+  "Row ? removed",
+  "Row ? removed",
+  "Row ? removed",
+  "Row ? removed"
+ ],
+ "p-move": [
+  "shape:#2 moved (points)"
+ ],
+ "p-resize": [
+  "shape:#3 resized (points)"
+ ],
+ "p-move-resize": [
+  "shape:#3 moved (points)",
+  "shape:#3 resized (points)"
+ ],
+ "p-front": [
+  "Stacking order changed: shape:#3"
+ ],
+ "p-back": [
+  "Stacking order changed: shape:#5"
+ ],
+ "p-forward": [
+  "Stacking order changed: shape:#4"
+ ],
+ "p-format-shape": [
+  "Fill added",
+  "Fill colour: #FF0000",
+  "Outline added",
+  "Outline colour: #00FF00",
+  "Outline width: 2",
+  "Alignment: center",
+  "Vertical alignment: center",
+  "Bold on",
+  "Italic on",
+  "Underline on",
+  "Font size: 24",
+  "Text colour: #0000FF",
+  "Font: Arial"
+ ],
+ "p-format-bold-multi": [
+  "Bold on"
+ ],
+ "p-shape-copy": [
+  "Shape added: shape:#4"
+ ],
+ "p-slide-move": [
+  "Slide moved 3 -> 5"
+ ],
+ "p-slide-copy": [
+  "Slide added"
+ ],
+ "p-slide-delete": [
+  "Slide deleted"
+ ],
+ "p-picture": [
+  "Picture added: shape:#4"
+ ],
+ "p-picture-delete": [
+  "Shape deleted: shape:#3"
+ ],
+ "p-set-para": [
+  "Text edited (paragraph)"
+ ],
+ "p-set-run": [
+  "Text edited (paragraph)"
+ ],
+ "p-delete-para": [
+  "Text edited (shape)",
+  "removed paragraph"
+ ],
+ "p-insert-shape": [
+  "Shape added: shape:#4"
+ ],
+ "d-splice": [
+  "Text edited (paragraph)"
+ ],
+ "d-splice-tracked": [
+  "Text edited (paragraph)",
+  "Tracked edit"
+ ],
+ "d-splice-tracked-insert": [
+  "Text edited (paragraph)",
+  "Tracked edit"
+ ],
+ "d-typing-tracked": [
+  "Text edited (paragraph)",
+  "Tracked edit"
+ ],
+ "d-delete-tracked": [
+  "Text edited (paragraph)",
+  "Tracked edit"
+ ],
+ "d-set-tracked": [
+  "Text edited (paragraph)",
+  "Tracked edit"
+ ],
+ "d-strike-highlight": [
+  "Strikethrough on",
+  "Highlight: Yellow"
+ ],
+ "d-strike-off": [
+  "Strikethrough off",
+  "Highlight removed",
+  "Strikethrough off",
+  "Highlight removed"
+ ],
+ "d-bold-range": [
+  "Bold on"
+ ],
+ "d-bold-para": [
+  "Bold on",
+  "Italic on"
+ ],
+ "d-align": [
+  "Alignment: center",
+  "Left indent: 18",
+  "Space after: 12"
+ ],
+ "d-list-numbered": [
+  "List: numbered (level 1)"
+ ],
+ "d-list-bullet": [
+  "List: bullet (level 0)"
+ ],
+ "d-list-none": [],
+ "d-split": [
+  "Paragraph split"
+ ],
+ "d-join": [
+  "Paragraphs joined"
+ ],
+ "d-delete-column": [
+  "Table column 2 deleted"
+ ],
+ "d-insert-column": [
+  "Table column 1 inserted"
+ ],
+ "d-comment-add": [
+  "Comment added"
+ ],
+ "d-comment-edit": [
+  "Comment edited"
+ ],
+ "d-comment-delete": [
+  "Text edited (run)",
+  "removed run",
+  "removed run",
+  "Comment deleted",
+  "Reply deleted",
+  "Font size: 11",
+  "Style: none"
+ ],
+ "d-image-delete": [
+  "Picture deleted"
+ ],
+ "d-image-insert": [
+  "Picture added"
+ ],
+ "d-replace-text": [
+  "Text edited (paragraph)",
+  "Text edited (paragraph)",
+  "Text edited (paragraph)"
+ ],
+ "d-hyperlink": [
+  "Link added"
+ ],
+ "d-insert-row": [
+  "added paragraph",
+  "added paragraph",
+  "added paragraph",
+  "added paragraph",
+  "removed paragraph",
+  "Row 2 added"
+ ]
+}

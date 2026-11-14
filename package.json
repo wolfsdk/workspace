@@ -1,0 +1,25 @@
+{
+  "name": "wolfsdk-workspace",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "typecheck": "fail=0; for p in packages/* apps/*; do [ -f \"$p/tsconfig.json\" ] || continue; echo \"== $p\"; node_modules/.bin/tsc -p \"$p\" --noEmit || fail=1; done; exit $fail",
+    "test": "bun test",
+    "build": "bun run --cwd packages/review build && bun run --cwd apps/workspace build",
+    "check": "bun run typecheck && bun test && bun run --cwd packages/review check",
+    "gate": "bun install --frozen-lockfile && bun run check"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.4.4",
+    "typescript": "^5.9.3"
+  },
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/wolfsdk/workspace.git"
+  }
+}

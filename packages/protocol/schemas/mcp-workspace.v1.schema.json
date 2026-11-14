@@ -1,0 +1,132 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://wolfsdk.com/schemas/mcp-workspace.v1.schema.json",
+  "title": "Wolf Workspace MCP tool call",
+  "description": "A tools/call request of the compact Wolf Workspace MCP server (wolfsdk.mcp-workspace.v1, Streamable HTTP). `name` is one of the eight tools in `x-wolfsdk-tools`; `arguments` validates against the inputSchema of the tool with that name. The tool list, serialized, stays under 14000 UTF-8 bytes so an agent pays under 3500 tokens for it.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["name", "arguments"],
+  "properties": {
+    "name": {"enum": ["workspace_list", "doc_read", "doc_search", "doc_create", "doc_edit", "doc_inspect_visual", "pack_link_refresh", "comment_reply"]},
+    "arguments": {"type": "object"}
+  },
+  "x-wolfsdk-tools": [
+    {
+      "name": "workspace_list",
+      "description": "List the workspace's documents, packs and open proposals. Start here: each document shows its format, head revision and sha256.",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "format": {"enum": ["docx", "xlsx", "pptx", "pdf"], "description": "Only documents of this format."},
+          "limit": {"type": "integer", "minimum": 1, "default": 100}
+        }
+      }
+    },
+    {
+      "name": "doc_read",
+      "description": "Read a document's head. Returns its revision (pass it as base_revision when editing) and the requested view.",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["doc"],
+        "properties": {
+          "doc": {"type": "string", "minLength": 1, "description": "Document name, for example budget.xlsx."},
+          "view": {"enum": ["structure", "text", "markdown", "cells"], "default": "structure", "description": "cells: XLSX values and formulas of target."},
+          "target": {"type": "string", "description": "Address, for example sheet:#1/range:A1:K50 or para:~2a9256c0. Default: the whole document."},
+          "max_nodes": {"type": "integer", "minimum": 1, "default": 400}
+        }
+      }
+    },
+    {
+      "name": "doc_search",
+      "description": "Search text and cell values across the workspace. Returns hits with doc, address, snippet and revision.",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["query"],
+        "properties": {
+          "query": {"type": "string", "minLength": 1},
+          "doc": {"type": "string", "minLength": 1, "description": "Limit to one document."},
+          "regex": {"type": "boolean", "default": false},
+          "limit": {"type": "integer", "minimum": 1, "default": 20}
+        }
+      }
+    },
+    {
+      "name": "doc_create",
+      "description": "Create a document, blank or as a copy of template, optionally applying one op batch. Fails if the name exists.",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "format"],
+        "properties": {
+          "name": {"type": "string", "minLength": 1, "description": "New document name with extension."},
+          "format": {"enum": ["docx", "xlsx", "pptx"]},
+          "template": {"type": "string", "minLength": 1, "description": "Existing document to copy."},
+          "ops": {"type": "array", "minItems": 1, "items": {"type": "object", "required": ["op"], "properties": {"op": {"type": "string", "minLength": 1}}}, "description": "Agent API operations."}
+        }
+      }
+    },
+    {
+      "name": "doc_edit",
+      "description": "Edit a document with one Agent API op batch. propose records a proposal for review; commit changes the head and is refused with REVISION_MISMATCH if base_revision is not the head: re-read, rebase, retry.",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["doc", "base_revision", "mode", "ops"],
+        "properties": {
+          "doc": {"type": "string", "minLength": 1},
+          "base_revision": {"type": "integer", "minimum": 0, "description": "Revision the ops were written against, from doc_read."},
+          "mode": {"enum": ["propose", "commit"]},
+          "ops": {"type": "array", "minItems": 1, "items": {"type": "object", "required": ["op"], "properties": {"op": {"type": "string", "minLength": 1}}}, "description": "Agent API operations."},
+          "message": {"type": "string", "description": "Why, shown to reviewers."}
+        }
+      }
+    },
+    {
+      "name": "doc_inspect_visual",
+      "description": "Render pages of a document, or of a proposal's preview, as PNG images. Set preflight to get page count, size and image cost without rendering.",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["doc"],
+        "properties": {
+          "doc": {"type": "string", "minLength": 1},
+          "pages": {"type": "array", "minItems": 1, "items": {"type": "integer", "minimum": 1}, "description": "1-based pages. Default: page 1."},
+          "dpi": {"enum": [72, 96, 150], "default": 96},
+          "preflight": {"type": "boolean", "default": false},
+          "proposal_id": {"type": "string", "minLength": 1, "description": "Render this proposal's preview instead of the head."}
+        }
+      }
+    },
+    {
+      "name": "pack_link_refresh",
+      "description": "Refresh a pack: recalculate its sources and rewrite the bound Word and PowerPoint targets as reviewable edits.",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["pack"],
+        "properties": {
+          "pack": {"type": "string", "minLength": 1, "description": "pack_id."},
+          "bindings": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}, "description": "Binding ids. Default: all."},
+          "mode": {"enum": ["propose", "commit"], "default": "propose"}
+        }
+      }
+    },
+    {
+      "name": "comment_reply",
+      "description": "Reply to a comment thread. Mention people or agents with @id in body.",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["thread_id", "body"],
+        "properties": {
+          "thread_id": {"type": "string", "minLength": 1},
+          "body": {"type": "string", "minLength": 1},
+          "resolve": {"type": "boolean", "default": false}
+        }
+      }
+    }
+  ]
+}

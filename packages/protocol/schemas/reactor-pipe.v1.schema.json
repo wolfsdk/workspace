@@ -1,0 +1,755 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://wolfsdk.com/schemas/reactor-pipe.v1.schema.json",
+  "title": "Wolf reactor pipe frame",
+  "description": "One decoded frame of the wolfsdk.reactor-pipe.v1 transport spoken by `wolf reactor-serve` over its standard input and output. On the wire a frame is a 12-byte header (three little-endian u32: req_id, json_bytes, bin_count), json_bytes bytes of UTF-8 JSON (the body), then bin_count binary segments, each a little-endian u32 length followed by that many bytes. This schema validates the decoded form {contract, kind, header, body}. A request body is one of the 22 agent_api::web version 2 commands plus `entitlement`; a response body echoes the command in `cmd`. Binary data never travels inside JSON: a buffer is named by a {bin, len} handle that indexes the trailing segments.",
+  "anyOf": [
+    {"$ref": "#/$defs/requestFrame"},
+    {"$ref": "#/$defs/responseFrame"}
+  ],
+  "$defs": {
+    "uint": {"type": "integer", "minimum": 0},
+    "u32": {"type": "integer", "minimum": 0, "maximum": 4294967295},
+    "handle": {"description": "An open document handle or a 1-based page number.", "type": "integer", "minimum": 1},
+    "positive": {"type": "integer", "minimum": 1},
+    "optUint": {"type": ["integer", "null"], "minimum": 0},
+    "optString": {"type": ["string", "null"], "minLength": 1},
+    "optClock": {
+      "description": "RFC 3339 UTC instant; null keeps the current value.",
+      "type": ["string", "null"],
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$"
+    },
+    "clock": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$"
+    },
+    "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "name": {"type": "string", "minLength": 1},
+    "ms": {"description": "Wall time inside the call, in milliseconds.", "type": "number", "minimum": 0},
+    "format": {"description": "Detected from content, never from the file name.", "enum": ["docx", "xlsx", "pptx", "pdf"]},
+    "rect": {"description": "[x, y, w, h] in page points, top-left origin.", "type": "array", "items": {"type": "number"}},
+    "pair": {"description": "[w, h].", "type": "array", "items": {"type": "number"}},
+    "blob": {
+      "description": "Handle of binary segment `bin` (0-based) whose length is `len`.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["bin", "len"],
+      "properties": {"bin": {"$ref": "#/$defs/uint"}, "len": {"$ref": "#/$defs/uint"}}
+    },
+    "output": {
+      "type": "object",
+      "required": ["path", "data"],
+      "properties": {"path": {"$ref": "#/$defs/name"}, "data": {"$ref": "#/$defs/blob"}}
+    },
+    "outputs": {"type": "array", "items": {"$ref": "#/$defs/output"}},
+    "extractWhat": {"enum": ["text", "structure", "markdown", "chunks", "barcodes"]},
+    "baseline": {"enum": ["openpyxl", "python-docx", "python-pptx", "libreoffice"]},
+    "cmd": {
+      "enum": [
+        "version", "budget", "open", "close", "save", "undo", "redo", "observe", "apply", "diff", "extract",
+        "recalc", "damage_report", "layout", "render_page_png", "display_list", "hit_test", "caret_rects",
+        "text_layout", "fonts", "resource", "sheet_viewport", "entitlement"
+      ]
+    },
+    "tier": {"enum": ["community", "commercial", "oem"]},
+    "knownErrorCode": {
+      "description": "Codes this contract names. `error.code` accepts any kebab-case code because admission and package codes of the engine are open-ended.",
+      "enum": [
+        "bad-request", "unknown-doc", "format-mismatch", "unsupported", "bad-determinism", "render-failed",
+        "bad-page", "bad-range", "unknown-object", "unknown-resource", "invalid-input", "reactor-document-limit",
+        "reactor-document-memory-limit", "reactor-host-memory-limit", "session-history-empty", "internal-error",
+        "license-seat-limit", "license-workspace-limit", "license-oem-required", "license-invalid"
+      ]
+    },
+    "error": {
+      "type": "object",
+      "required": ["code", "message"],
+      "properties": {
+        "code": {"type": "string", "pattern": "^[a-z][a-z0-9]*(-[a-z0-9]+)*$"},
+        "message": {"type": "string"},
+        "argument": {"type": "string"}
+      }
+    },
+    "header": {
+      "description": "Fixed 12-byte frame header: req_id, json_bytes and bin_count as little-endian u32, in that order. A response carries the req_id of its request.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["req_id", "json_bytes", "bin_count"],
+      "properties": {
+        "req_id": {"$ref": "#/$defs/u32"},
+        "json_bytes": {"type": "integer", "minimum": 0, "maximum": 67108864},
+        "bin_count": {"type": "integer", "minimum": 0, "maximum": 1024}
+      }
+    },
+
+    "req_version": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["cmd"],
+      "properties": {"cmd": {"const": "version"}}
+    },
+    "req_budget": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["cmd"],
+      "properties": {
+        "cmd": {"const": "budget"},
+        "held_bytes": {"$ref": "#/$defs/positive"},
+        "document_bytes": {"$ref": "#/$defs/positive"},
+        "documents": {"$ref": "#/$defs/positive"},
+        "derived_bytes": {"$ref": "#/$defs/positive"}
+      }
+    },
+    "req_open": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["cmd", "bytes"],
+      "properties": {
+        "cmd": {"const": "open"},
+        "bytes": {"$ref": "#/$defs/blob"},
+        "name": {"$ref": "#/$defs/name"},
+        "format": {"$ref": "#/$defs/format"},
+        "clock": {"$ref": "#/$defs/optClock"},
+        "timezone": {"$ref": "#/$defs/optString"},
+        "locale": {"$ref": "#/$defs/optString"},
+        "seed": {"$ref": "#/$defs/optUint"}
+      }
+    },
+    "req_doc": {
+      "description": "close, save, undo, redo and fonts take only the document handle; `cmd` selects which.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["cmd", "doc"],
+      "properties": {
+        "cmd": {"enum": ["close", "save", "undo", "redo", "fonts"]},
+        "doc": {"$ref": "#/$defs/handle"}
+      }
+    },
+    "req_observe": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["cmd", "doc"],
+      "properties": {
+        "cmd": {"const": "observe"},
+        "doc": {"$ref": "#/$defs/handle"},
+        "options": {"type": "object"},
+        "clock": {"$ref": "#/$defs/optClock"},
+        "timezone": {"$ref": "#/$defs/optString"},
+        "locale": {"$ref": "#/$defs/optString"},
+        "seed": {"$ref": "#/$defs/optUint"}
+      }
+    },
+    "req_apply": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["cmd", "doc", "ops"],
+      "properties": {
+        "cmd": {"const": "apply"},
+        "doc": {"$ref": "#/$defs/handle"},
+        "ops": {"description": "One Agent API operation batch, as `wolf transact --ops` takes it."},
+        "options": {"type": "object"},
+        "relayout": {"type": "boolean"},
+        "clock": {"$ref": "#/$defs/optClock"},
+        "timezone": {"$ref": "#/$defs/optString"},
+        "locale": {"$ref": "#/$defs/optString"},
+        "seed": {"$ref": "#/$defs/optUint"}
+      }
+    },
+    "req_diff": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["cmd", "doc", "against"],
+      "properties": {
+        "cmd": {"const": "diff"},
+        "doc": {"$ref": "#/$defs/handle"},
+        "against": {"$ref": "#/$defs/handle"},
+        "options": {"type": "object"},
+        "clock": {"$ref": "#/$defs/optClock"},
+        "timezone": {"$ref": "#/$defs/optString"},
+        "locale": {"$ref": "#/$defs/optString"},
+        "seed": {"$ref": "#/$defs/optUint"}
+      }
+    },
+    "req_extract": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["cmd", "doc"],
+      "properties": {
+        "cmd": {"const": "extract"},
+        "doc": {"$ref": "#/$defs/handle"},
+        "options": {
+          "type": "object",
+          "properties": {"what": {"type": "array", "items": {"$ref": "#/$defs/extractWhat"}}}
+        },
+        "clock": {"$ref": "#/$defs/optClock"},
+        "timezone": {"$ref": "#/$defs/optString"},
+        "locale": {"$ref": "#/$defs/optString"},
+        "seed": {"$ref": "#/$defs/optUint"}
+      }
+    },
+    "req_recalc": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["cmd", "doc", "clock", "seed"],
+      "properties": {
+        "cmd": {"const": "recalc"},
+        "doc": {"$ref": "#/$defs/handle"},
+        "clock": {"$ref": "#/$defs/clock"},
+        "seed": {"$ref": "#/$defs/uint"},
+        "timezone": {"$ref": "#/$defs/optString"},
+        "locale": {"$ref": "#/$defs/optString"},
+        "options": {"type": "object"}
+      }
+    },
+    "req_damage_report": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["cmd", "doc"],
+      "properties": {
+        "cmd": {"const": "damage_report"},
+        "doc": {"$ref": "#/$defs/handle"},
+        "options": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "baselines": {"type": "array", "items": {"$ref": "#/$defs/baseline"}},
+            "output_stem": {"$ref": "#/$defs/name"},
+            "timeout_ms": {"$ref": "#/$defs/uint"}
+          }
+        }
+      }
+    },
+    "req_layout": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["cmd", "doc"],
+      "properties": {
+        "cmd": {"const": "layout"},
+        "doc": {"$ref": "#/$defs/handle"},
+        "clock": {"$ref": "#/$defs/optClock"},
+        "timezone": {"$ref": "#/$defs/optString"},
+        "locale": {"$ref": "#/$defs/optString"},
+        "seed": {"$ref": "#/$defs/optUint"}
+      }
+    },
+    "req_render_page_png": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["cmd", "doc", "page"],
+      "properties": {
+        "cmd": {"const": "render_page_png"},
+        "doc": {"$ref": "#/$defs/handle"},
+        "page": {"$ref": "#/$defs/handle"},
+        "scale": {"description": "Pixels per point: greater than 0 and at most 16.", "type": "number", "exclusiveMinimum": 0, "maximum": 16}
+      }
+    },
+    "req_display_list": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["cmd", "doc", "page"],
+      "properties": {
+        "cmd": {"const": "display_list"},
+        "doc": {"$ref": "#/$defs/handle"},
+        "page": {"$ref": "#/$defs/handle"}
+      }
+    },
+    "req_hit_test": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["cmd", "doc", "page", "x_pt", "y_pt"],
+      "properties": {
+        "cmd": {"const": "hit_test"},
+        "doc": {"$ref": "#/$defs/handle"},
+        "page": {"$ref": "#/$defs/handle"},
+        "x_pt": {"type": "number"},
+        "y_pt": {"type": "number"}
+      }
+    },
+    "req_caret_rects": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["cmd", "doc", "object_id", "start"],
+      "properties": {
+        "cmd": {"const": "caret_rects"},
+        "doc": {"$ref": "#/$defs/handle"},
+        "object_id": {"$ref": "#/$defs/name"},
+        "start": {"$ref": "#/$defs/uint"},
+        "end": {"$ref": "#/$defs/uint"}
+      }
+    },
+    "req_text_layout": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["cmd", "doc", "object_id"],
+      "properties": {
+        "cmd": {"const": "text_layout"},
+        "doc": {"$ref": "#/$defs/handle"},
+        "object_id": {"$ref": "#/$defs/name"}
+      }
+    },
+    "req_resource": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["cmd", "handle"],
+      "properties": {"cmd": {"const": "resource"}, "handle": {"$ref": "#/$defs/name"}}
+    },
+    "req_sheet_viewport": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["cmd", "doc"],
+      "properties": {
+        "cmd": {"const": "sheet_viewport"},
+        "doc": {"$ref": "#/$defs/handle"},
+        "sheet": {"anyOf": [{"type": "string", "minLength": 1}, {"type": "integer", "minimum": 1}]},
+        "row0": {"$ref": "#/$defs/positive"},
+        "col0": {"$ref": "#/$defs/positive"},
+        "rows": {"$ref": "#/$defs/positive"},
+        "cols": {"$ref": "#/$defs/positive"}
+      }
+    },
+    "req_entitlement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["cmd"],
+      "properties": {"cmd": {"const": "entitlement"}}
+    },
+    "request": {
+      "anyOf": [
+        {"$ref": "#/$defs/req_version"},
+        {"$ref": "#/$defs/req_budget"},
+        {"$ref": "#/$defs/req_open"},
+        {"$ref": "#/$defs/req_doc"},
+        {"$ref": "#/$defs/req_observe"},
+        {"$ref": "#/$defs/req_apply"},
+        {"$ref": "#/$defs/req_diff"},
+        {"$ref": "#/$defs/req_extract"},
+        {"$ref": "#/$defs/req_recalc"},
+        {"$ref": "#/$defs/req_damage_report"},
+        {"$ref": "#/$defs/req_layout"},
+        {"$ref": "#/$defs/req_render_page_png"},
+        {"$ref": "#/$defs/req_display_list"},
+        {"$ref": "#/$defs/req_hit_test"},
+        {"$ref": "#/$defs/req_caret_rects"},
+        {"$ref": "#/$defs/req_text_layout"},
+        {"$ref": "#/$defs/req_resource"},
+        {"$ref": "#/$defs/req_sheet_viewport"},
+        {"$ref": "#/$defs/req_entitlement"}
+      ]
+    },
+
+    "determinism": {
+      "type": "object",
+      "required": ["clock", "timezone", "locale", "seed"],
+      "properties": {
+        "clock": {"type": "string"},
+        "timezone": {"type": "string"},
+        "locale": {"type": "string"},
+        "seed": {"$ref": "#/$defs/uint"}
+      }
+    },
+    "budgetValues": {
+      "type": "object",
+      "required": ["held_bytes", "document_bytes", "documents", "derived_bytes"],
+      "properties": {
+        "held_bytes": {"$ref": "#/$defs/positive"},
+        "document_bytes": {"$ref": "#/$defs/positive"},
+        "documents": {"$ref": "#/$defs/positive"},
+        "derived_bytes": {"$ref": "#/$defs/positive"}
+      }
+    },
+    "heldValues": {
+      "type": "object",
+      "required": ["documents", "floor_bytes", "reactor_derived_bytes", "derived_bytes", "resources", "resource_tombstones"],
+      "properties": {
+        "documents": {"$ref": "#/$defs/uint"},
+        "floor_bytes": {"$ref": "#/$defs/uint"},
+        "reactor_derived_bytes": {"$ref": "#/$defs/uint"},
+        "derived_bytes": {"$ref": "#/$defs/uint"},
+        "resources": {"$ref": "#/$defs/uint"},
+        "resource_tombstones": {"$ref": "#/$defs/uint"}
+      }
+    },
+    "pagesInfo": {
+      "type": "object",
+      "required": ["compared", "count", "changed", "removed", "hashes"],
+      "properties": {
+        "compared": {"type": "boolean"},
+        "count": {"$ref": "#/$defs/uint"},
+        "changed": {"type": "array", "items": {"$ref": "#/$defs/handle"}},
+        "removed": {"type": "array", "items": {"$ref": "#/$defs/handle"}},
+        "hashes": {"type": "array", "items": {"$ref": "#/$defs/sha256"}},
+        "layout_ms": {"type": "number", "minimum": 0}
+      }
+    },
+
+    "res_error": {
+      "description": "A refusal: `error` is present and no command members follow. `cmd` is echoed when the request named a known command and omitted when the request body was not valid JSON or `cmd` was missing, not a string, or unknown. Hosts branch on `error` first.",
+      "type": "object",
+      "required": ["ok", "ms", "error"],
+      "properties": {
+        "cmd": {"$ref": "#/$defs/cmd"},
+        "ok": {"const": false},
+        "ms": {"$ref": "#/$defs/ms"},
+        "error": {"$ref": "#/$defs/error"}
+      }
+    },
+    "res_version": {
+      "type": "object",
+      "required": ["cmd", "ok", "ms", "engine", "clock", "timezone", "locale", "seed", "abi", "budget"],
+      "properties": {
+        "cmd": {"const": "version"},
+        "ok": {"const": true},
+        "ms": {"$ref": "#/$defs/ms"},
+        "engine": {"$ref": "#/$defs/name"},
+        "clock": {"type": "string"},
+        "timezone": {"type": "string"},
+        "locale": {"type": "string"},
+        "seed": {"$ref": "#/$defs/uint"},
+        "abi": {"const": 2},
+        "budget": {"$ref": "#/$defs/budgetValues"}
+      }
+    },
+    "res_budget": {
+      "type": "object",
+      "required": ["cmd", "ok", "ms", "budget", "held"],
+      "properties": {
+        "cmd": {"const": "budget"},
+        "ok": {"const": true},
+        "ms": {"$ref": "#/$defs/ms"},
+        "budget": {"$ref": "#/$defs/budgetValues"},
+        "held": {"$ref": "#/$defs/heldValues"}
+      }
+    },
+    "res_open": {
+      "type": "object",
+      "required": ["cmd", "ok", "ms", "doc", "format", "sha256", "bytes", "revision", "determinism"],
+      "properties": {
+        "cmd": {"const": "open"},
+        "ok": {"const": true},
+        "ms": {"$ref": "#/$defs/ms"},
+        "doc": {"$ref": "#/$defs/handle"},
+        "format": {"$ref": "#/$defs/format"},
+        "sha256": {"$ref": "#/$defs/sha256"},
+        "bytes": {"$ref": "#/$defs/uint"},
+        "revision": {"$ref": "#/$defs/uint"},
+        "determinism": {"$ref": "#/$defs/determinism"}
+      }
+    },
+    "res_close": {
+      "description": "`ok` is false when the handle was not open; that is not a refusal.",
+      "type": "object",
+      "required": ["cmd", "ok", "ms", "doc"],
+      "properties": {
+        "cmd": {"const": "close"},
+        "ok": {"type": "boolean"},
+        "ms": {"$ref": "#/$defs/ms"},
+        "doc": {"$ref": "#/$defs/handle"}
+      }
+    },
+    "res_save": {
+      "type": "object",
+      "required": ["cmd", "ok", "ms", "doc", "revision", "sha256", "bytes"],
+      "properties": {
+        "cmd": {"const": "save"},
+        "ok": {"const": true},
+        "ms": {"$ref": "#/$defs/ms"},
+        "doc": {"$ref": "#/$defs/handle"},
+        "revision": {"$ref": "#/$defs/uint"},
+        "sha256": {"$ref": "#/$defs/sha256"},
+        "bytes": {"$ref": "#/$defs/blob"}
+      }
+    },
+    "res_history": {
+      "description": "undo and redo.",
+      "type": "object",
+      "required": ["cmd", "ok", "ms", "doc", "revision", "sha256", "undo_depth", "redo_depth"],
+      "properties": {
+        "cmd": {"enum": ["undo", "redo"]},
+        "ok": {"const": true},
+        "ms": {"$ref": "#/$defs/ms"},
+        "doc": {"$ref": "#/$defs/handle"},
+        "revision": {"$ref": "#/$defs/uint"},
+        "sha256": {"$ref": "#/$defs/sha256"},
+        "undo_depth": {"$ref": "#/$defs/uint"},
+        "redo_depth": {"$ref": "#/$defs/uint"}
+      }
+    },
+    "res_receipt": {
+      "description": "observe, extract, recalc and damage_report: the engine receipt plus captured output files. `ok` is false when the engine exited non-zero; the typed errors are then in `receipt`.",
+      "type": "object",
+      "required": ["cmd", "ok", "ms", "receipt"],
+      "properties": {
+        "cmd": {"enum": ["observe", "extract", "recalc", "damage_report"]},
+        "ok": {"type": "boolean"},
+        "ms": {"$ref": "#/$defs/ms"},
+        "receipt": {"type": "object"},
+        "outputs": {"$ref": "#/$defs/outputs"},
+        "format": {"$ref": "#/$defs/format"}
+      }
+    },
+    "res_apply": {
+      "type": "object",
+      "required": ["cmd", "ok", "ms", "committed", "revision", "sha256", "receipt"],
+      "properties": {
+        "cmd": {"const": "apply"},
+        "ok": {"type": "boolean"},
+        "ms": {"$ref": "#/$defs/ms"},
+        "committed": {"type": "boolean"},
+        "revision": {"$ref": "#/$defs/uint"},
+        "base_sha256": {"$ref": "#/$defs/sha256"},
+        "sha256": {"$ref": "#/$defs/sha256"},
+        "determinism": {"$ref": "#/$defs/determinism"},
+        "receipt": {"type": "object"},
+        "diff": {"type": ["object", "null"]},
+        "pages": {"anyOf": [{"$ref": "#/$defs/pagesInfo"}, {"type": "null"}]},
+        "outputs": {"$ref": "#/$defs/outputs"}
+      }
+    },
+    "res_diff": {
+      "type": "object",
+      "required": ["cmd", "ok", "ms", "receipt"],
+      "properties": {
+        "cmd": {"const": "diff"},
+        "ok": {"type": "boolean"},
+        "ms": {"$ref": "#/$defs/ms"},
+        "receipt": {"type": "object"}
+      }
+    },
+    "res_layout": {
+      "type": "object",
+      "required": ["cmd", "ok", "ms", "cached", "layout_ms", "summary", "page_hashes"],
+      "properties": {
+        "cmd": {"const": "layout"},
+        "ok": {"const": true},
+        "ms": {"$ref": "#/$defs/ms"},
+        "cached": {"type": "boolean"},
+        "layout_ms": {"type": "number", "minimum": 0},
+        "summary": {
+          "type": "object",
+          "required": ["format", "pages", "determinism"],
+          "properties": {
+            "format": {"$ref": "#/$defs/format"},
+            "pages": {"$ref": "#/$defs/uint"},
+            "runs": {"$ref": "#/$defs/uint"},
+            "tagged_runs": {"$ref": "#/$defs/uint"},
+            "regions": {"$ref": "#/$defs/uint"},
+            "objects": {"$ref": "#/$defs/uint"},
+            "fonts": {"$ref": "#/$defs/uint"},
+            "images": {"$ref": "#/$defs/uint"},
+            "determinism": {"$ref": "#/$defs/determinism"}
+          }
+        },
+        "page_hashes": {"type": "array", "items": {"$ref": "#/$defs/sha256"}}
+      }
+    },
+    "res_render_page_png": {
+      "type": "object",
+      "required": ["cmd", "ok", "ms", "page", "size_pt", "pixel_size", "layout_cached", "png"],
+      "properties": {
+        "cmd": {"const": "render_page_png"},
+        "ok": {"const": true},
+        "ms": {"$ref": "#/$defs/ms"},
+        "page": {"$ref": "#/$defs/handle"},
+        "size_pt": {"$ref": "#/$defs/pair"},
+        "pixel_size": {"anyOf": [{"$ref": "#/$defs/pair"}, {"type": "null"}]},
+        "layout_cached": {"type": "boolean"},
+        "png": {"$ref": "#/$defs/blob"},
+        "format": {"$ref": "#/$defs/format"}
+      }
+    },
+    "res_display_list": {
+      "type": "object",
+      "required": ["cmd", "ok", "ms", "page", "page_hash", "ir", "fonts", "images", "runs", "objects", "regions", "layout_cached"],
+      "properties": {
+        "cmd": {"const": "display_list"},
+        "ok": {"const": true},
+        "ms": {"$ref": "#/$defs/ms"},
+        "page": {"$ref": "#/$defs/handle"},
+        "page_hash": {"$ref": "#/$defs/sha256"},
+        "ir": {"type": "object"},
+        "fonts": {"type": "array", "items": {"type": "object"}},
+        "images": {"type": "array", "items": {"type": "object"}},
+        "runs": {"type": "array", "items": {"type": "object"}},
+        "objects": {"type": "object"},
+        "regions": {"type": "array", "items": {"type": "object"}},
+        "layout_cached": {"type": "boolean"},
+        "format": {"$ref": "#/$defs/format"}
+      }
+    },
+    "res_hit_test": {
+      "type": "object",
+      "required": ["cmd", "ok", "ms", "page", "object_id", "offset", "rendered_offset", "synthetic", "inside_text"],
+      "properties": {
+        "cmd": {"const": "hit_test"},
+        "ok": {"const": true},
+        "ms": {"$ref": "#/$defs/ms"},
+        "page": {"$ref": "#/$defs/handle"},
+        "object_id": {"type": ["string", "null"]},
+        "offset": {"$ref": "#/$defs/optUint"},
+        "rendered_offset": {"$ref": "#/$defs/optUint"},
+        "synthetic": {"type": "boolean"},
+        "inside_text": {"type": "boolean"},
+        "run": {"$ref": "#/$defs/uint"},
+        "run_offset": {"$ref": "#/$defs/uint"},
+        "caret": {"$ref": "#/$defs/rect"},
+        "sheet": {"type": "string"},
+        "a1": {"type": "string"}
+      }
+    },
+    "res_caret_rects": {
+      "type": "object",
+      "required": ["cmd", "ok", "ms", "object_id", "start", "end", "length", "rects"],
+      "properties": {
+        "cmd": {"const": "caret_rects"},
+        "ok": {"const": true},
+        "ms": {"$ref": "#/$defs/ms"},
+        "object_id": {"$ref": "#/$defs/name"},
+        "start": {"$ref": "#/$defs/uint"},
+        "end": {"$ref": "#/$defs/uint"},
+        "length": {"$ref": "#/$defs/uint"},
+        "rects": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["page", "x", "y", "w", "h"],
+            "properties": {
+              "page": {"$ref": "#/$defs/handle"},
+              "x": {"type": "number"},
+              "y": {"type": "number"},
+              "w": {"type": "number"},
+              "h": {"type": "number"}
+            }
+          }
+        }
+      }
+    },
+    "res_text_layout": {
+      "type": "object",
+      "required": ["cmd", "ok", "ms", "object_id", "text", "length", "source_text", "rendered", "lines"],
+      "properties": {
+        "cmd": {"const": "text_layout"},
+        "ok": {"const": true},
+        "ms": {"$ref": "#/$defs/ms"},
+        "object_id": {"$ref": "#/$defs/name"},
+        "text": {"type": "string"},
+        "length": {"$ref": "#/$defs/uint"},
+        "source_text": {"type": "boolean"},
+        "rendered": {"type": "string"},
+        "lines": {"type": "array", "items": {"type": "object"}},
+        "sheet": {"type": "string"},
+        "a1": {"type": "string"}
+      }
+    },
+    "res_fonts": {
+      "type": "object",
+      "required": ["cmd", "ok", "ms", "format", "requests", "faces"],
+      "properties": {
+        "cmd": {"const": "fonts"},
+        "ok": {"const": true},
+        "ms": {"$ref": "#/$defs/ms"},
+        "format": {"$ref": "#/$defs/format"},
+        "requests": {"type": "array", "items": {"type": "object"}},
+        "faces": {"type": "array", "items": {"type": "object"}}
+      }
+    },
+    "res_resource": {
+      "type": "object",
+      "required": ["cmd", "ok", "ms", "handle", "kind", "mime", "bytes"],
+      "properties": {
+        "cmd": {"const": "resource"},
+        "ok": {"const": true},
+        "ms": {"$ref": "#/$defs/ms"},
+        "handle": {"$ref": "#/$defs/name"},
+        "kind": {"enum": ["font", "image", "license"]},
+        "mime": {"$ref": "#/$defs/name"},
+        "bytes": {"$ref": "#/$defs/blob"}
+      }
+    },
+    "res_sheet_viewport": {
+      "type": "object",
+      "required": ["cmd", "ok", "ms", "sheet", "sheets", "row0", "col0", "rows", "cols", "cells", "columns", "row_heights", "merged", "styles", "revision"],
+      "properties": {
+        "cmd": {"const": "sheet_viewport"},
+        "ok": {"const": true},
+        "ms": {"$ref": "#/$defs/ms"},
+        "sheet": {"type": "string"},
+        "sheets": {"type": "array", "items": {"type": "object"}},
+        "used_range": {"type": ["string", "null"]},
+        "row0": {"$ref": "#/$defs/positive"},
+        "col0": {"$ref": "#/$defs/positive"},
+        "rows": {"$ref": "#/$defs/uint"},
+        "cols": {"$ref": "#/$defs/uint"},
+        "cells": {"type": "array", "items": {"type": "object"}},
+        "columns": {"type": "array", "items": {"type": "object"}},
+        "row_heights": {"type": "array", "items": {"type": "object"}},
+        "merged": {"type": "array", "items": {"type": "string"}},
+        "styles": {"type": "object"},
+        "revision": {"$ref": "#/$defs/uint"}
+      }
+    },
+    "res_entitlement": {
+      "description": "What the running process is licensed for. `null` limits mean unlimited. A community entitlement is keyless: key_id and expires_at are null, sso and oem_offline_wasm are false, at most 1 workspace and 5 seats.",
+      "type": "object",
+      "required": ["cmd", "ok", "ms", "tier", "max_workspaces", "max_seats", "sso", "oem_offline_wasm", "key_id", "expires_at"],
+      "properties": {
+        "cmd": {"const": "entitlement"},
+        "ok": {"const": true},
+        "ms": {"$ref": "#/$defs/ms"},
+        "tier": {"$ref": "#/$defs/tier"},
+        "max_workspaces": {"$ref": "#/$defs/optUint"},
+        "max_seats": {"$ref": "#/$defs/optUint"},
+        "sso": {"type": "boolean"},
+        "oem_offline_wasm": {"type": "boolean"},
+        "key_id": {"$ref": "#/$defs/optString"},
+        "expires_at": {"$ref": "#/$defs/optClock"}
+      }
+    },
+    "response": {
+      "anyOf": [
+        {"$ref": "#/$defs/res_error"},
+        {"$ref": "#/$defs/res_version"},
+        {"$ref": "#/$defs/res_budget"},
+        {"$ref": "#/$defs/res_open"},
+        {"$ref": "#/$defs/res_close"},
+        {"$ref": "#/$defs/res_save"},
+        {"$ref": "#/$defs/res_history"},
+        {"$ref": "#/$defs/res_receipt"},
+        {"$ref": "#/$defs/res_apply"},
+        {"$ref": "#/$defs/res_diff"},
+        {"$ref": "#/$defs/res_layout"},
+        {"$ref": "#/$defs/res_render_page_png"},
+        {"$ref": "#/$defs/res_display_list"},
+        {"$ref": "#/$defs/res_hit_test"},
+        {"$ref": "#/$defs/res_caret_rects"},
+        {"$ref": "#/$defs/res_text_layout"},
+        {"$ref": "#/$defs/res_fonts"},
+        {"$ref": "#/$defs/res_resource"},
+        {"$ref": "#/$defs/res_sheet_viewport"},
+        {"$ref": "#/$defs/res_entitlement"}
+      ]
+    },
+
+    "requestFrame": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["contract", "kind", "header", "body"],
+      "properties": {
+        "contract": {"const": "wolfsdk.reactor-pipe.v1"},
+        "kind": {"const": "request"},
+        "header": {"$ref": "#/$defs/header"},
+        "body": {"$ref": "#/$defs/request"}
+      }
+    },
+    "responseFrame": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["contract", "kind", "header", "body"],
+      "properties": {
+        "contract": {"const": "wolfsdk.reactor-pipe.v1"},
+        "kind": {"const": "response"},
+        "header": {"$ref": "#/$defs/header"},
+        "body": {"$ref": "#/$defs/response"}
+      }
+    }
+  }
+}

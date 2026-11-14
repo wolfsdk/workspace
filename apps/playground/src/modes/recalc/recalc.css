@@ -1,0 +1,358 @@
+/* Recalc mode. Colours come from tokens.css; every state also has a text label. */
+
+.recalc {
+  display: grid;
+  gap: 16px;
+  color: var(--text);
+}
+
+.recalc-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.recalc-lede,
+.recalc-notice {
+  margin: 0;
+  max-width: 60ch;
+  color: var(--text-muted);
+  line-height: 1.5;
+}
+
+.recalc-notice {
+  padding: 12px 16px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--bg-card);
+  color: var(--text);
+}
+
+.recalc-run,
+.recalc-pages button,
+.recalc-table th button {
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+
+.recalc-run {
+  padding: 10px 18px;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  background: var(--text);
+  color: var(--bg);
+  font-weight: 600;
+}
+
+.recalc-run:hover:not(:disabled) {
+  background: var(--accent-hover);
+}
+
+.recalc-run:disabled,
+.recalc-pages button:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+.recalc-status p {
+  margin: 0;
+}
+
+.recalc-result strong {
+  font-size: 1.25em;
+  font-variant-numeric: tabular-nums;
+}
+
+.recalc-source {
+  color: var(--text-muted);
+}
+
+.recalc-error {
+  padding: 12px 16px;
+  border: 1px solid var(--verdict-removed);
+  border-radius: var(--radius);
+  background: var(--bg-card);
+}
+
+/* The page */
+
+.recalc-sheet {
+  margin: 0;
+  display: grid;
+  gap: 8px;
+}
+
+.recalc-sheet figcaption {
+  color: var(--text-muted);
+  font-size: 0.875rem;
+}
+
+.recalc-pages {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.recalc-pages button {
+  padding: 4px 12px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: transparent;
+}
+
+.recalc-placeholder {
+  margin: 0;
+  padding: 48px 16px;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius);
+  color: var(--text-muted);
+  text-align: center;
+}
+
+.recalc-paper {
+  position: relative;
+  background: var(--paper);
+  box-shadow: var(--shadow-lg);
+}
+
+.recalc-paper img {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+/* A cracked cell: the cell's two halves part along a seam and a callout sets
+ * the computed value beside the stored one the reader sees. */
+
+.recalc-crack {
+  position: absolute;
+  outline: 2px solid var(--verdict-changed);
+  outline-offset: 1px;
+}
+
+.recalc-crack:focus-visible {
+  outline: 3px solid var(--paper-ink);
+  z-index: 2;
+}
+
+.recalc-shard {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 50%;
+  border: 0 solid var(--verdict-changed);
+  animation: recalc-part 420ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+
+.recalc-shard--top {
+  top: 0;
+  border-bottom-width: 2px;
+  clip-path: polygon(0 0, 100% 0, 100% 80%, 85% 100%, 60% 70%, 35% 100%, 15% 75%, 0 95%);
+  --recalc-dy: -3px;
+}
+
+.recalc-shard--bottom {
+  bottom: 0;
+  border-top-width: 2px;
+  clip-path: polygon(0 5%, 15% 25%, 35% 0, 60% 30%, 85% 0, 100% 20%, 100% 100%, 0 100%);
+  --recalc-dy: 3px;
+}
+
+.recalc-callout {
+  position: absolute;
+  top: 50%;
+  display: grid;
+  gap: 2px;
+  width: max-content;
+  max-width: 22ch;
+  padding: 6px 8px;
+  border: 1px solid var(--paper-rule);
+  border-radius: 8px;
+  background: var(--paper);
+  color: var(--paper-ink);
+  box-shadow: var(--shadow-lg);
+  font-size: 0.75rem;
+  line-height: 1.3;
+  transform: translateY(-50%);
+  animation: recalc-open 420ms 160ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+  z-index: 1;
+}
+
+.recalc-crack--right .recalc-callout {
+  left: calc(100% + 8px);
+  transform-origin: left center;
+}
+
+.recalc-crack--left .recalc-callout {
+  right: calc(100% + 8px);
+  transform-origin: right center;
+}
+
+.recalc-callout-row {
+  display: grid;
+}
+
+.recalc-callout-label {
+  color: var(--paper-muted);
+}
+
+.recalc-callout-row--computed .recalc-value {
+  font-weight: 700;
+}
+
+.recalc-paper--dense .recalc-callout {
+  display: none;
+}
+
+.recalc-paper--dense .recalc-crack:hover .recalc-callout,
+.recalc-paper--dense .recalc-crack:focus-visible .recalc-callout {
+  display: grid;
+  z-index: 3;
+}
+
+@keyframes recalc-part {
+  from {
+    transform: translateY(0);
+  }
+  to {
+    transform: translateY(var(--recalc-dy));
+  }
+}
+
+@keyframes recalc-open {
+  from {
+    opacity: 0;
+    transform: translateY(-50%) scaleX(0.4);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(-50%) scaleX(1);
+  }
+}
+
+/* Reduced motion: the cell shows its parted state at once, no movement. */
+@media (prefers-reduced-motion: reduce) {
+  .recalc-shard,
+  .recalc-callout {
+    animation: none;
+  }
+  .recalc-shard {
+    transform: translateY(var(--recalc-dy));
+  }
+}
+
+/* The rail */
+
+.recalc-rail {
+  display: grid;
+  gap: 12px;
+}
+
+.recalc-rail h2 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.recalc-rail p {
+  margin: 0;
+  color: var(--text-muted);
+  line-height: 1.5;
+}
+
+.recalc-table-wrap {
+  overflow-x: auto;
+}
+
+.recalc-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.8125rem;
+}
+
+.recalc-table th,
+.recalc-table td {
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+  vertical-align: top;
+}
+
+.recalc-table thead th {
+  padding: 0;
+  border-bottom-color: var(--border-strong);
+  white-space: nowrap;
+}
+
+.recalc-table th button {
+  width: 100%;
+  padding: 6px 8px;
+  border: 0;
+  background: transparent;
+  text-align: left;
+  font-weight: 600;
+}
+
+.recalc-table th button:hover {
+  background: var(--code-bg);
+}
+
+.recalc-table tbody th {
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.recalc-value {
+  font-family: var(--font-mono);
+  overflow-wrap: anywhere;
+}
+
+.recalc-num {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.recalc-na {
+  color: var(--text-muted);
+}
+
+.recalc-kind,
+.recalc-formula,
+.recalc-receipt {
+  display: block;
+  color: var(--text-muted);
+  font-size: 0.75rem;
+  font-weight: 400;
+}
+
+.recalc-formula {
+  font-family: var(--font-mono);
+}
+
+.recalc-claims {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+}
+
+.recalc-claims dt {
+  color: var(--text-muted);
+  font-size: 0.8125rem;
+}
+
+.recalc-claims dd {
+  margin: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.recalc-sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}

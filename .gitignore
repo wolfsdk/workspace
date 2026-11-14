@@ -1,0 +1,14 @@
+node_modules/
+dist/
+pack/
+*.tsbuildinfo
+.DS_Store
+
+# Local engine modules and their build receipts. A module is tens of megabytes
+# and is never committed or packed; build one with scripts/build_wolf_web.py
+# at the repository root or copy one in. See README.md.
+vendor/
+
+# Local compose.yaml runtime room directory and actor token table.
+data/
+actors.json

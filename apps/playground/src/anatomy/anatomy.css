@@ -1,0 +1,282 @@
+/* Verdict colour and pattern. Every verdict has both, so none is told by colour alone. */
+:is(.wa-cell, .wr-seg, .wl-swatch)[data-verdict] {
+  --wa-ink: rgba(0, 0, 0, 0.42);
+  background-color: var(--wv);
+  background-image: var(--wp, none);
+  background-size: var(--wps, auto);
+}
+:is(.wa-cell, .wr-seg, .wl-swatch)[data-verdict="identical-stream"] {
+  --wv: var(--verdict-identical);
+  --wp: none;
+}
+:is(.wa-cell, .wr-seg, .wl-swatch)[data-verdict="same-bytes-recompressed"] {
+  --wv: var(--verdict-recompressed);
+  --wp: radial-gradient(circle at 3px 3px, var(--wa-ink) 1.2px, transparent 1.7px);
+  --wps: 6px 6px;
+}
+:is(.wa-cell, .wr-seg, .wl-swatch)[data-verdict="xml-equivalent"] {
+  --wv: var(--verdict-equivalent);
+  --wp: repeating-linear-gradient(0deg, var(--wa-ink) 0 1px, transparent 1px 5px);
+}
+:is(.wa-cell, .wr-seg, .wl-swatch)[data-verdict="changed"] {
+  --wv: var(--verdict-changed);
+  --wp: repeating-linear-gradient(45deg, var(--wa-ink) 0 2px, transparent 2px 7px);
+}
+:is(.wa-cell, .wr-seg, .wl-swatch)[data-verdict="removed"] {
+  --wv: var(--verdict-removed);
+  --wp: repeating-linear-gradient(45deg, var(--wa-ink) 0 1px, transparent 1px 6px),
+    repeating-linear-gradient(-45deg, var(--wa-ink) 0 1px, transparent 1px 6px);
+}
+:is(.wa-cell, .wr-seg, .wl-swatch)[data-verdict="added"] {
+  --wv: var(--verdict-added);
+  --wp: repeating-linear-gradient(90deg, var(--wa-ink) 0 1px, transparent 1px 5px);
+}
+
+/* Anatomy map */
+.wa {
+  display: grid;
+  gap: 8px;
+  font-family: var(--font-sans);
+  color: var(--text);
+}
+.wa-canvas {
+  position: relative;
+  aspect-ratio: 16 / 10;
+  width: 100%;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+.wa-group {
+  position: absolute;
+  box-sizing: border-box;
+  border: 1px solid var(--border-strong);
+  transition:
+    left 420ms ease,
+    top 420ms ease,
+    width 420ms ease,
+    height 420ms ease;
+}
+.wa-group-label {
+  position: absolute;
+  z-index: 3;
+  left: 4px;
+  top: 4px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: rgba(5, 5, 6, 0.78);
+  color: var(--text);
+  font-size: 11px;
+  font-weight: 600;
+  pointer-events: none;
+}
+.wa-cell {
+  position: absolute;
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--bg);
+  background-color: var(--bg-card);
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  overflow: hidden;
+  transition:
+    left 420ms ease,
+    top 420ms ease,
+    width 420ms ease,
+    height 420ms ease,
+    background-color 420ms ease;
+}
+.wa-cell:not([data-verdict]) {
+  background-color: var(--code-bg);
+}
+button.wa-cell {
+  cursor: pointer;
+}
+button.wa-cell:hover {
+  border-color: var(--text-muted);
+}
+.wa-cell:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+  z-index: 2;
+}
+.wa-cell[data-highlight="true"] {
+  border: 3px dashed var(--text);
+  z-index: 1;
+}
+.wa-cell[data-shift="a"] {
+  animation: wa-shift-a 700ms ease-out;
+}
+.wa-cell[data-shift="b"] {
+  animation: wa-shift-b 700ms ease-out;
+}
+@keyframes wa-shift-a {
+  from {
+    box-shadow: inset 0 0 0 3px var(--text);
+  }
+  to {
+    box-shadow: inset 0 0 0 0 transparent;
+  }
+}
+@keyframes wa-shift-b {
+  from {
+    box-shadow: inset 0 0 0 3px var(--text);
+  }
+  to {
+    box-shadow: inset 0 0 0 0 transparent;
+  }
+}
+.wa-cell-text {
+  position: absolute;
+  left: 4px;
+  right: 4px;
+  bottom: 4px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
+  pointer-events: none;
+}
+.wa-cell-name,
+.wa-cell-verdict {
+  max-width: 100%;
+  padding: 0 4px;
+  border-radius: 3px;
+  background: rgba(5, 5, 6, 0.72);
+  font-size: 11px;
+  line-height: 1.35;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.wa-cell-name {
+  font-family: var(--font-mono);
+}
+.wa-cell-verdict {
+  color: var(--text-muted);
+}
+.wa-empty {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.wa-cell--inline {
+  position: relative;
+  min-width: 120px;
+  min-height: 38px;
+  border-radius: 6px;
+}
+.wa-note {
+  margin: 0;
+  padding: var(--pad);
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius);
+  color: var(--text-muted);
+}
+
+/* Byte ribbon */
+.wr {
+  margin: 0;
+  display: grid;
+  gap: 4px;
+  font-family: var(--font-sans);
+  color: var(--text);
+}
+.wr-strip,
+.wr-marks {
+  position: relative;
+  width: 100%;
+}
+.wr-strip {
+  height: 28px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+}
+.wr-seg {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  box-sizing: border-box;
+  border-right: 1px solid var(--bg);
+  transition:
+    left 420ms ease,
+    width 420ms ease;
+}
+.wr-seg:not([data-verdict]) {
+  background-color: var(--code-bg);
+}
+.wr-seg--structure {
+  background-color: var(--bg);
+  background-image: repeating-linear-gradient(90deg, var(--border) 0 1px, transparent 1px 3px);
+}
+.wr-seg--changed {
+  min-width: 2px;
+}
+.wr-marks {
+  height: 8px;
+}
+.wr-mark {
+  position: absolute;
+  top: 0;
+  height: 6px;
+  min-width: 2px;
+  box-sizing: border-box;
+  border-top: 2px solid var(--text);
+  border-left: 2px solid var(--text);
+  border-right: 2px solid var(--text);
+}
+.wr-caption {
+  font-size: 13px;
+  color: var(--text-muted);
+}
+.wr-share {
+  color: var(--text);
+}
+
+/* Legend */
+.wl {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 6px;
+  font-family: var(--font-sans);
+  font-size: 13px;
+  color: var(--text-muted);
+}
+.wl-item {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+.wl-swatch {
+  flex: none;
+  width: 18px;
+  height: 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: 3px;
+  transform: translateY(1px);
+}
+.wl-label {
+  color: var(--text);
+  font-weight: 600;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .wa-group,
+  .wa-cell,
+  .wr-seg {
+    transition: none;
+  }
+  .wa-cell[data-shift] {
+    animation: none;
+  }
+}

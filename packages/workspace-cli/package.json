@@ -1,0 +1,27 @@
+{
+  "name": "@wolfsdk/workspace",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "bin": {
+    "wolfsdk-workspace": "./src/cli.ts"
+  },
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@wolfsdk/mcp": "workspace:*",
+    "@wolfsdk/packs": "workspace:*",
+    "@wolfsdk/protocol": "workspace:*",
+    "@wolfsdk/server": "workspace:*"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/wolfsdk/workspace.git",
+    "directory": "packages/workspace-cli"
+  }
+}

@@ -1,0 +1,31 @@
+{
+  "name": "@wolfsdk/playground",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "review": "bun run --cwd ../../packages/review build",
+    "dev": "bun run review && vite",
+    "build": "bun run review && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc -p .",
+    "test": "bun test test"
+  },
+  "dependencies": {
+    "@wolfsdk/protocol": "workspace:*",
+    "@wolfsdk/review": "workspace:*",
+    "@wolfsdk/runtime": "workspace:*",
+    "preact": "^10.29.0",
+    "pyodide": "0.29.5"
+  },
+  "devDependencies": {
+    "preact-render-to-string": "^6.8.3",
+    "vite": "^8.3.0"
+  },
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/wolfsdk/workspace.git",
+    "directory": "apps/playground"
+  }
+}

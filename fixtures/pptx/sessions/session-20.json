@@ -1,0 +1,343 @@
+[
+ {
+  "name": "set title text",
+  "ops": [
+   {
+    "op": "set",
+    "target": "slide:#256/shape:#2",
+    "value": {
+     "text": "Operating Review Pack FY26"
+    }
+   }
+  ]
+ },
+ {
+  "name": "set subtitle text (two paragraphs)",
+  "ops": [
+   {
+    "op": "set",
+    "target": "slide:#256/shape:#3",
+    "value": {
+     "text": "Board-style deck\nRefreshed for the wasm editor"
+    }
+   }
+  ]
+ },
+ {
+  "name": "replace-text in slide title",
+  "ops": [
+   {
+    "op": "replace-text",
+    "target": "slide:#257/shape:#2",
+    "find": "Revenue",
+    "replace": "Net revenue",
+    "occurrence": "first"
+   }
+  ]
+ },
+ {
+  "name": "table cell edit r2c2",
+  "ops": [
+   {
+    "op": "set",
+    "target": "slide:#257/shape:#3/row:@2/cell:@2",
+    "value": {
+     "text": "12.5"
+    }
+   }
+  ]
+ },
+ {
+  "name": "table cell edit r3c2 + r4c2",
+  "ops": [
+   {
+    "op": "set",
+    "target": "slide:#257/shape:#3/row:@3/cell:@2",
+    "value": {
+     "text": "11.0"
+    }
+   },
+   {
+    "op": "set",
+    "target": "slide:#257/shape:#3/row:@4/cell:@2",
+    "value": {
+     "text": "+1.5"
+    }
+   }
+  ]
+ },
+ {
+  "name": "format title font",
+  "ops": [
+   {
+    "op": "format",
+    "target": "slide:#256/shape:#2",
+    "format": {
+     "font": {
+      "bold": true,
+      "size": 40,
+      "color": "#1F3864",
+      "name": "Calibri"
+     }
+    }
+   }
+  ]
+ },
+ {
+  "name": "format rounded rectangle fill+line",
+  "ops": [
+   {
+    "op": "format",
+    "target": "slide:#259/shape:#3",
+    "format": {
+     "fill": {
+      "color": "#C00000"
+     },
+     "line": {
+      "color": "#000000",
+      "width": 2
+     }
+    }
+   }
+  ]
+ },
+ {
+  "name": "format table header cell",
+  "ops": [
+   {
+    "op": "format",
+    "target": "slide:#257/shape:#3/row:@1/cell:@1",
+    "format": {
+     "fill": {
+      "color": "#1F3864"
+     },
+     "font": {
+      "bold": true,
+      "color": "#FFFFFF",
+      "size": 14
+     },
+     "alignment": {
+      "horizontal": "center",
+      "vertical": "center"
+     }
+    }
+   }
+  ]
+ },
+ {
+  "name": "insert ellipse badge (place + size)",
+  "ops": [
+   {
+    "op": "insert",
+    "anchor": "slide:#256",
+    "position": "last-child",
+    "node": {
+     "kind": "shape",
+     "geometry": "ellipse",
+     "text": "NEW",
+     "key": "Badge",
+     "offset": {
+      "x_emu": 7315200,
+      "y_emu": 457200
+     },
+     "extent": {
+      "cx_emu": 1371600,
+      "cy_emu": 685800
+     }
+    }
+   }
+  ],
+  "expect_created": [
+   "slide:#256/shape:#5"
+  ]
+ },
+ {
+  "name": "insert text box on risk slide",
+  "ops": [
+   {
+    "op": "insert",
+    "anchor": "slide:#259",
+    "position": "last-child",
+    "node": {
+     "kind": "shape",
+     "text": "Owner: CFO",
+     "key": "Owner note",
+     "offset": {
+      "x_emu": 685800,
+      "y_emu": 5486400
+     },
+     "extent": {
+      "cx_emu": 3200400,
+      "cy_emu": 457200
+     }
+    }
+   }
+  ],
+  "expect_created": [
+   "slide:#259/shape:#6"
+  ]
+ },
+ {
+  "name": "edit the inserted badge text",
+  "ops": [
+   {
+    "op": "set",
+    "target": "slide:#256/shape:#5",
+    "value": {
+     "text": "FY26"
+    }
+   }
+  ]
+ },
+ {
+  "name": "format the inserted badge",
+  "ops": [
+   {
+    "op": "format",
+    "target": "slide:#256/shape:#5",
+    "format": {
+     "fill": {
+      "color": "#00B050"
+     },
+     "font": {
+      "bold": true,
+      "color": "#FFFFFF"
+     },
+     "alignment": {
+      "horizontal": "center",
+      "vertical": "center"
+     }
+    }
+   }
+  ]
+ },
+ {
+  "name": "table insert row after r2",
+  "ops": [
+   {
+    "op": "insert-row",
+    "anchor": "slide:#257/shape:#3/row:@2",
+    "position": "after",
+    "cells": [
+     "Forecast",
+     "13.0",
+     "13.5",
+     "14.0",
+     "14.5"
+    ],
+    "height_emu": 457200
+   }
+  ]
+ },
+ {
+  "name": "table insert column at end",
+  "ops": [
+   {
+    "op": "insert-column",
+    "target": "slide:#257/shape:#3",
+    "index": 5,
+    "cells": [
+     "Total",
+     "1",
+     "2",
+     "3",
+     "4",
+     "5"
+    ],
+    "width_emu": 1000000
+   }
+  ]
+ },
+ {
+  "name": "table resize column 1",
+  "ops": [
+   {
+    "op": "resize",
+    "target": "slide:#257/shape:#3/col:@1",
+    "width_emu": 2000000
+   }
+  ]
+ },
+ {
+  "name": "chart set point",
+  "ops": [
+   {
+    "op": "set",
+    "target": "slide:#258/shape:#3/chart/series:Revenue/point:Q2",
+    "value": {
+     "number": 13.9
+    }
+   }
+  ]
+ },
+ {
+  "name": "chart append category",
+  "ops": [
+   {
+    "op": "append-chart-category",
+    "target": "slide:#258/shape:#3/chart",
+    "label": "Q5",
+    "values": [
+     18.0,
+     17.0
+    ]
+   }
+  ]
+ },
+ {
+  "name": "insert cloned slide after #257",
+  "ops": [
+   {
+    "op": "insert",
+    "anchor": "slide:#257",
+    "position": "after",
+    "node": {
+     "kind": "slide",
+     "from": "slide:#257"
+    }
+   }
+  ],
+  "expect_created": [
+   "slide:#269"
+  ]
+ },
+ {
+  "name": "reorder: clone #260 to position 2, delete original",
+  "ops": [
+   {
+    "op": "insert",
+    "anchor": "slide:#256",
+    "position": "after",
+    "node": {
+     "kind": "slide",
+     "from": "slide:#260"
+    }
+   },
+   {
+    "op": "delete",
+    "target": "slide:#260"
+   }
+  ],
+  "expect_created": [
+   "slide:#270"
+  ]
+ },
+ {
+  "name": "insert Title Only slide with title at end",
+  "ops": [
+   {
+    "op": "insert",
+    "anchor": "slide:#268",
+    "position": "after",
+    "node": {
+     "kind": "slide",
+     "style": "Title Only",
+     "text": "Appendix"
+    }
+   }
+  ],
+  "expect_created": [
+   "slide:#260"
+  ]
+ }
+]

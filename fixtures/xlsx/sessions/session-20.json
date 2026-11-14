@@ -1,0 +1,30 @@
+[
+  [{"op":"set","target":"sheet:Regions/cell:C4","value":{"number":10000}}],
+  [{"op":"set","target":"sheet:Regions/cell:B5","value":{"number":5600}}],
+  [{"op":"set","target":"sheet:Regions/cell:E3","value":{"string":"Delta"}}],
+  [
+    {"op":"set","target":"sheet:Regions/cell:E4","value":{"formula":"=C4-B4"}},
+    {"op":"set","target":"sheet:Regions/cell:E5","value":{"formula":"=C5-B5"}},
+    {"op":"set","target":"sheet:Regions/cell:E6","value":{"formula":"=C6-B6"}},
+    {"op":"set","target":"sheet:Regions/cell:E7","value":{"formula":"=C7-B7"}}
+  ],
+  [{"op":"set","target":"sheet:Regions/cell:E8","value":{"formula":"=SUM(E4:E7)"}}],
+  [{"op":"format","target":"sheet:Regions/range:E3:E8","format":{"font":{"bold":true},"fill":{"color":"#DDEBF7"}}}],
+  [{"op":"format","target":"sheet:Regions/range:B4:C8","format":{"number_format":"#,##0"}}],
+  [{"op":"format","target":"sheet:Regions/cell:E3","format":{"column_width":14}}],
+  [
+    {"op":"set","target":"sheet:Summary/cell:A9","value":{"string":"Delta Q3-Q2 ($K)"}},
+    {"op":"set","target":"sheet:Summary/cell:B9","value":{"formula":"=Regions!E8"}}
+  ],
+  [{"op":"insert","anchor":"sheet:Regions/row:@2","position":"before","node":{"kind":"row"}}],
+  [{"op":"set","target":"sheet:Regions/cell:C5","value":{"number":10250}}],
+  [{"op":"insert","anchor":"sheet:Regions/col:D","position":"before","node":{"kind":"col"}}],
+  [{"op":"set","target":"sheet:Regions/cell:D4","value":{"string":"Note"}}],
+  [{"op":"rename","target":"sheet:Summary","name":"Board Summary"}],
+  [{"op":"set","target":"sheet:#2/cell:B11","value":{"formula":"=B3-B4"}}],
+  [{"op":"merge","target":"sheet:Regions/range:A1:C1"}],
+  [{"op":"freeze","target":"sheet:Regions","cell":"A5"}],
+  [{"op":"replace-text","target":"sheet:#2","find":"Q3 board summary","replace":"Quarter 3 board summary","occurrence":"first"}],
+  [{"op":"set","target":"sheet:Regions/range:B8:C8","values":[[{"number":4000},{"number":4300}]]}],
+  [{"op":"set","target":"sheet:Regions/cell:C11","value":{"number":22000}}]
+]

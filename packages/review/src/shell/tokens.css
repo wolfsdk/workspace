@@ -1,0 +1,575 @@
+/*
+ * Wolf Review design tokens and shared control classes.
+ *
+ * Tokens live on the shell root (`.we-shell`), never on `:root`, so they
+ * apply inside a shadow root and do not leak into an embedding page. A
+ * standalone plugin harness can opt in with `class="we-theme"`.
+ *
+ * Theme: `data-theme="light" | "dark" | "auto"` on the root (`auto`, the
+ * default, follows `prefers-color-scheme`). Every colour token reads a public
+ * override first: `--wolf-<name>` for the light theme and `--wolf-dark-<name>`
+ * for the dark theme, so an embedding page can restyle the editor from the
+ * host element (`<wolf-review style="--wolf-accent: #0a7">`).
+ */
+
+.we-shell,
+.we-theme {
+  /* Surfaces, back to front */
+  --we-canvas: var(--wolf-canvas, #e7e8ec);
+  --we-surface: var(--wolf-surface, #f6f7f9);
+  --we-bg: var(--wolf-bg, #ffffff);
+  --we-raised: var(--wolf-raised, #ffffff);
+  --we-page: var(--wolf-page, #ffffff);
+  --we-hover: var(--wolf-hover, rgba(20, 24, 36, 0.06));
+  --we-pressed: var(--wolf-pressed, rgba(20, 24, 36, 0.11));
+  --we-selected: var(--wolf-selected, rgba(36, 99, 235, 0.12));
+  --we-scrim: var(--wolf-scrim, rgba(16, 18, 24, 0.32));
+  --we-skeleton: var(--wolf-skeleton, #eceef2);
+  --we-skeleton-shine: var(--wolf-skeleton-shine, #f7f8fa);
+
+  /* Text */
+  --we-fg: var(--wolf-fg, #1b1d22);
+  --we-fg-2: var(--wolf-fg-2, #464a54);
+  /* 4.5:1 or better on the canvas grey and on hover chips (WCAG AA body text). */
+  --we-muted: var(--wolf-muted, #5e636e);
+  --we-on-accent: var(--wolf-on-accent, #ffffff);
+  --we-on-success: var(--wolf-on-success, #ffffff);
+  --we-on-danger: var(--wolf-on-danger, #ffffff);
+
+  /* Lines */
+  --we-border: var(--wolf-border, #d6d8de);
+  --we-border-strong: var(--wolf-border-strong, #b9bcc5);
+  --we-divider: var(--wolf-divider, #e4e6ea);
+
+  /* Accent and focus */
+  --we-accent: var(--wolf-accent, #2463eb);
+  --we-accent-hover: var(--wolf-accent-hover, #1d54cc);
+  --we-accent-soft: var(--wolf-accent-soft, rgba(36, 99, 235, 0.12));
+  --we-focus: var(--wolf-focus, #2463eb);
+
+  /* Status tones (foreground + soft background) */
+  --we-success: var(--wolf-success, #1d7a46);
+  --we-success-bg: var(--wolf-success-bg, #e6f4ec);
+  --we-warning: var(--wolf-warning, #8a5a00);
+  --we-warning-bg: var(--wolf-warning-bg, #fff4d9);
+  --we-danger: var(--wolf-danger, #c8312b);
+  --we-danger-bg: var(--wolf-danger-bg, #fdecea);
+  --we-info: var(--wolf-info, #2463eb);
+  --we-info-bg: var(--wolf-info-bg, #e9f0fe);
+
+  /* Change tones (review, tracked changes) */
+  --we-added: var(--wolf-added, #1d7a46);
+  --we-added-bg: var(--wolf-added-bg, #e3f3e9);
+  --we-modified: var(--wolf-modified, #9a5b00);
+  --we-modified-bg: var(--wolf-modified-bg, #fdf0d8);
+  --we-removed: var(--wolf-removed, #c8312b);
+  --we-removed-bg: var(--wolf-removed-bg, #fce8e6);
+  --we-moved: var(--wolf-moved, #6d3fc4);
+  --we-moved-bg: var(--wolf-moved-bg, #efe8fb);
+
+  /* Drawn on the page, which stays white in every theme: theme-independent, each at least
+   * 3:1 against #ffffff (contrast in brackets). Overlays on pages use these, not the
+   * change tones above. */
+  --we-page-added: var(--wolf-page-added, #1a7f44); /* 5.0:1 */
+  --we-page-modified: var(--wolf-page-modified, #a35c00); /* 5.1:1 */
+  --we-page-removed: var(--wolf-page-removed, #c8312b); /* 5.3:1 */
+  --we-page-moved: var(--wolf-page-moved, #6d3fc4); /* 6.6:1 */
+  --we-page-selection: var(--wolf-page-selection, #2463eb); /* 5.2:1 */
+  --we-page-focus-ring: var(--wolf-page-focus-ring, #0b4fd6); /* 6.8:1 */
+
+  /* Shape, spacing, size */
+  --we-radius-sm: 4px;
+  --we-radius: 6px;
+  --we-radius-lg: 10px;
+  --we-space-1: 2px;
+  --we-space-2: 4px;
+  --we-space-3: 8px;
+  --we-space-4: 12px;
+  --we-space-5: 16px;
+  --we-space-6: 24px;
+  --we-space-7: 32px;
+  --we-control-h: 28px;
+  --we-control-h-sm: 24px;
+  --we-icon: 16px;
+
+  /* Type */
+  --we-font: var(
+    --wolf-font,
+    -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    Roboto,
+    "Helvetica Neue",
+    Arial,
+    sans-serif
+  );
+  --we-font-mono: var(--wolf-font-mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
+  --we-text-xs: 11px;
+  --we-text-sm: 12px;
+  --we-text-md: 13px;
+  --we-text-lg: 15px;
+  --we-text-xl: 20px;
+  --we-text-2xl: 26px;
+
+  /* Elevation */
+  --we-shadow-1: 0 1px 2px rgba(16, 18, 24, 0.08);
+  --we-shadow-2: 0 4px 16px rgba(16, 18, 24, 0.14), 0 1px 3px rgba(16, 18, 24, 0.1);
+  --we-shadow-3: 0 12px 40px rgba(16, 18, 24, 0.22), 0 2px 6px rgba(16, 18, 24, 0.12);
+  --we-shadow-page: 0 0 0 1px rgba(16, 18, 24, 0.06), 0 2px 8px rgba(16, 18, 24, 0.12);
+  --we-focus-ring: 0 0 0 2px var(--we-bg), 0 0 0 4px var(--we-focus);
+
+  /* Motion (zeroed under prefers-reduced-motion) */
+  --we-duration: 120ms;
+  --we-ease: cubic-bezier(0.2, 0, 0, 1);
+
+  color-scheme: light;
+  font-family: var(--we-font);
+  font-size: var(--we-text-md);
+  line-height: 1.4;
+  color: var(--we-fg);
+}
+
+/* Dark: explicit, or `auto` / unset on a dark system. */
+.we-shell[data-theme="dark"],
+.we-theme[data-theme="dark"] {
+  --we-canvas: var(--wolf-dark-canvas, #121316);
+  --we-surface: var(--wolf-dark-surface, #1d1e22);
+  --we-bg: var(--wolf-dark-bg, #25272c);
+  --we-raised: var(--wolf-dark-raised, #2c2e34);
+  --we-page: var(--wolf-dark-page, #ffffff);
+  --we-hover: var(--wolf-dark-hover, rgba(255, 255, 255, 0.07));
+  --we-pressed: var(--wolf-dark-pressed, rgba(255, 255, 255, 0.13));
+  --we-selected: var(--wolf-dark-selected, rgba(110, 156, 255, 0.2));
+  --we-scrim: var(--wolf-dark-scrim, rgba(0, 0, 0, 0.5));
+  --we-skeleton: var(--wolf-dark-skeleton, #2a2c32);
+  --we-skeleton-shine: var(--wolf-dark-skeleton-shine, #353840);
+  --we-fg: var(--wolf-dark-fg, #e8e9ed);
+  --we-fg-2: var(--wolf-dark-fg-2, #c4c7cf);
+  --we-muted: var(--wolf-dark-muted, #9a9eaa);
+  --we-on-accent: var(--wolf-dark-on-accent, #0b1020);
+  --we-on-success: var(--wolf-dark-on-success, #0b1020);
+  --we-on-danger: var(--wolf-dark-on-danger, #0b1020);
+  --we-border: var(--wolf-dark-border, #3a3d45);
+  --we-border-strong: var(--wolf-dark-border-strong, #50545e);
+  --we-divider: var(--wolf-dark-divider, #2f3138);
+  --we-accent: var(--wolf-dark-accent, #6e9cff);
+  --we-accent-hover: var(--wolf-dark-accent-hover, #8fb2ff);
+  --we-accent-soft: var(--wolf-dark-accent-soft, rgba(110, 156, 255, 0.18));
+  --we-focus: var(--wolf-dark-focus, #8fb2ff);
+  --we-success: var(--wolf-dark-success, #5fd08e);
+  --we-success-bg: var(--wolf-dark-success-bg, #1c3326);
+  --we-warning: var(--wolf-dark-warning, #f0c060);
+  --we-warning-bg: var(--wolf-dark-warning-bg, #3a3120);
+  --we-danger: var(--wolf-dark-danger, #ff7a70);
+  --we-danger-bg: var(--wolf-dark-danger-bg, #3d2423);
+  --we-info: var(--wolf-dark-info, #7fa8ff);
+  --we-info-bg: var(--wolf-dark-info-bg, #1f2a44);
+  --we-added: var(--wolf-dark-added, #6bd497);
+  --we-added-bg: var(--wolf-dark-added-bg, #1b3324);
+  --we-modified: var(--wolf-dark-modified, #f2bd5c);
+  --we-modified-bg: var(--wolf-dark-modified-bg, #3a2f1a);
+  --we-removed: var(--wolf-dark-removed, #ff8a80);
+  --we-removed-bg: var(--wolf-dark-removed-bg, #3e2422);
+  --we-moved: var(--wolf-dark-moved, #b69cff);
+  --we-moved-bg: var(--wolf-dark-moved-bg, #2c2443);
+  --we-shadow-1: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --we-shadow-2: 0 4px 16px rgba(0, 0, 0, 0.45), 0 1px 3px rgba(0, 0, 0, 0.4);
+  --we-shadow-3: 0 12px 40px rgba(0, 0, 0, 0.55), 0 2px 6px rgba(0, 0, 0, 0.4);
+  --we-shadow-page: 0 0 0 1px rgba(0, 0, 0, 0.5), 0 2px 10px rgba(0, 0, 0, 0.5);
+  color-scheme: dark;
+}
+
+@media (prefers-color-scheme: dark) {
+  .we-shell:not([data-theme="light"]),
+  .we-theme:not([data-theme="light"]) {
+    --we-canvas: var(--wolf-dark-canvas, #121316);
+    --we-surface: var(--wolf-dark-surface, #1d1e22);
+    --we-bg: var(--wolf-dark-bg, #25272c);
+    --we-raised: var(--wolf-dark-raised, #2c2e34);
+    --we-page: var(--wolf-dark-page, #ffffff);
+    --we-hover: var(--wolf-dark-hover, rgba(255, 255, 255, 0.07));
+    --we-pressed: var(--wolf-dark-pressed, rgba(255, 255, 255, 0.13));
+    --we-selected: var(--wolf-dark-selected, rgba(110, 156, 255, 0.2));
+    --we-scrim: var(--wolf-dark-scrim, rgba(0, 0, 0, 0.5));
+    --we-skeleton: var(--wolf-dark-skeleton, #2a2c32);
+    --we-skeleton-shine: var(--wolf-dark-skeleton-shine, #353840);
+    --we-fg: var(--wolf-dark-fg, #e8e9ed);
+    --we-fg-2: var(--wolf-dark-fg-2, #c4c7cf);
+    --we-muted: var(--wolf-dark-muted, #9a9eaa);
+    --we-on-accent: var(--wolf-dark-on-accent, #0b1020);
+    --we-on-success: var(--wolf-dark-on-success, #0b1020);
+    --we-on-danger: var(--wolf-dark-on-danger, #0b1020);
+    --we-border: var(--wolf-dark-border, #3a3d45);
+    --we-border-strong: var(--wolf-dark-border-strong, #50545e);
+    --we-divider: var(--wolf-dark-divider, #2f3138);
+    --we-accent: var(--wolf-dark-accent, #6e9cff);
+    --we-accent-hover: var(--wolf-dark-accent-hover, #8fb2ff);
+    --we-accent-soft: var(--wolf-dark-accent-soft, rgba(110, 156, 255, 0.18));
+    --we-focus: var(--wolf-dark-focus, #8fb2ff);
+    --we-success: var(--wolf-dark-success, #5fd08e);
+    --we-success-bg: var(--wolf-dark-success-bg, #1c3326);
+    --we-warning: var(--wolf-dark-warning, #f0c060);
+    --we-warning-bg: var(--wolf-dark-warning-bg, #3a3120);
+    --we-danger: var(--wolf-dark-danger, #ff7a70);
+    --we-danger-bg: var(--wolf-dark-danger-bg, #3d2423);
+    --we-info: var(--wolf-dark-info, #7fa8ff);
+    --we-info-bg: var(--wolf-dark-info-bg, #1f2a44);
+    --we-added: var(--wolf-dark-added, #6bd497);
+    --we-added-bg: var(--wolf-dark-added-bg, #1b3324);
+    --we-modified: var(--wolf-dark-modified, #f2bd5c);
+    --we-modified-bg: var(--wolf-dark-modified-bg, #3a2f1a);
+    --we-removed: var(--wolf-dark-removed, #ff8a80);
+    --we-removed-bg: var(--wolf-dark-removed-bg, #3e2422);
+    --we-moved: var(--wolf-dark-moved, #b69cff);
+    --we-moved-bg: var(--wolf-dark-moved-bg, #2c2443);
+    --we-shadow-1: 0 1px 2px rgba(0, 0, 0, 0.4);
+    --we-shadow-2: 0 4px 16px rgba(0, 0, 0, 0.45), 0 1px 3px rgba(0, 0, 0, 0.4);
+    --we-shadow-3: 0 12px 40px rgba(0, 0, 0, 0.55), 0 2px 6px rgba(0, 0, 0, 0.4);
+    --we-shadow-page: 0 0 0 1px rgba(0, 0, 0, 0.5), 0 2px 10px rgba(0, 0, 0, 0.5);
+    color-scheme: dark;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .we-shell,
+  .we-theme {
+    --we-duration: 0ms;
+  }
+}
+
+/* ---------------------------------------------------------------------------
+ * Shared controls. Plugins use these instead of their own button styles.
+ * States: :hover, :active, :disabled, [aria-pressed="true"], :focus-visible.
+ * ------------------------------------------------------------------------- */
+
+.we-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--we-space-2);
+  height: var(--we-control-h);
+  min-width: var(--we-control-h);
+  padding: 0 var(--we-space-3);
+  border: 1px solid transparent;
+  border-radius: var(--we-radius);
+  background: transparent;
+  color: var(--we-fg);
+  font: inherit;
+  font-size: var(--we-text-md);
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+  user-select: none;
+  transition:
+    background-color var(--we-duration) var(--we-ease),
+    border-color var(--we-duration) var(--we-ease),
+    color var(--we-duration) var(--we-ease);
+}
+.we-btn:hover:not(:disabled) {
+  background: var(--we-hover);
+}
+.we-btn:active:not(:disabled) {
+  background: var(--we-pressed);
+}
+/* On state of neutral buttons only; each solid variant defines its own below, so a pressed
+ * Approve stays green and a pressed Reject stays red. */
+.we-btn:not(.we-btn--primary, .we-btn--danger, .we-btn--success)[aria-pressed="true"],
+.we-btn:not(.we-btn--primary, .we-btn--danger, .we-btn--success)[aria-expanded="true"] {
+  background: var(--we-accent-soft);
+  /* The stronger accent: plain --we-accent on its soft tone is under 4.5:1 in the light theme. */
+  color: var(--we-accent-hover);
+}
+/* Solid variants when pressed: their own colour, plus an inner ring and an outer halo in the
+ * variant's soft tone, so on and off differ without changing hue. */
+.we-btn--primary[aria-pressed="true"],
+.we-btn--danger[aria-pressed="true"],
+.we-btn--success[aria-pressed="true"] {
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.7),
+    0 0 0 2px var(--we-pressed-halo);
+}
+.we-btn--primary[aria-pressed="true"] {
+  --we-pressed-halo: var(--we-accent-soft);
+}
+.we-btn--danger[aria-pressed="true"] {
+  --we-pressed-halo: var(--we-danger-bg);
+}
+.we-btn--success[aria-pressed="true"] {
+  --we-pressed-halo: var(--we-success-bg);
+}
+.we-btn:disabled {
+  color: var(--we-muted);
+  opacity: 0.5;
+  cursor: default;
+}
+.we-btn svg {
+  flex: none;
+  width: var(--we-icon);
+  height: var(--we-icon);
+}
+
+/* Outlined variant for standalone buttons outside a toolbar. */
+.we-btn--outline {
+  border-color: var(--we-border);
+  background: var(--we-bg);
+}
+.we-btn--outline:hover:not(:disabled) {
+  border-color: var(--we-border-strong);
+  background: var(--we-bg);
+  box-shadow: inset 0 0 0 100px var(--we-hover);
+}
+
+.we-btn--icon {
+  width: var(--we-control-h);
+  padding: 0;
+}
+
+.we-btn--small {
+  height: var(--we-control-h-sm);
+  min-width: var(--we-control-h-sm);
+  padding: 0 var(--we-space-2);
+  font-size: var(--we-text-sm);
+}
+.we-btn--small.we-btn--icon {
+  width: var(--we-control-h-sm);
+  padding: 0;
+}
+
+.we-btn--primary {
+  border-color: var(--we-accent);
+  background: var(--we-accent);
+  color: var(--we-on-accent);
+  font-weight: 500;
+}
+.we-btn--primary:hover:not(:disabled) {
+  border-color: var(--we-accent-hover);
+  background: var(--we-accent-hover);
+}
+.we-btn--primary:active:not(:disabled) {
+  background: var(--we-accent);
+}
+
+.we-btn--danger {
+  border-color: var(--we-danger);
+  background: var(--we-danger);
+  color: var(--we-on-danger);
+  font-weight: 500;
+}
+.we-btn--danger:hover:not(:disabled) {
+  background: var(--we-danger);
+  box-shadow: inset 0 0 0 100px rgba(0, 0, 0, 0.1);
+}
+
+/* Destructive action without a solid fill (delete in a toolbar): red icon and text. */
+.we-btn--danger-quiet {
+  color: var(--we-danger);
+}
+.we-btn--danger-quiet:hover:not(:disabled) {
+  background: var(--we-danger-bg);
+  color: var(--we-danger);
+}
+
+.we-btn--success {
+  border-color: var(--we-success);
+  background: var(--we-success);
+  color: var(--we-on-success);
+  font-weight: 500;
+}
+.we-btn--success:hover:not(:disabled) {
+  background: var(--we-success);
+  box-shadow: inset 0 0 0 100px rgba(0, 0, 0, 0.1);
+}
+
+.we-select,
+.we-input {
+  height: var(--we-control-h);
+  min-width: 0;
+  padding: 0 var(--we-space-3);
+  border: 1px solid var(--we-border);
+  border-radius: var(--we-radius);
+  background: var(--we-bg);
+  color: var(--we-fg);
+  font: inherit;
+  font-size: var(--we-text-md);
+  transition: border-color var(--we-duration) var(--we-ease);
+}
+.we-select {
+  padding-right: var(--we-space-5);
+  appearance: none;
+  background-image:
+    linear-gradient(45deg, transparent 50%, var(--we-muted) 50%),
+    linear-gradient(135deg, var(--we-muted) 50%, transparent 50%);
+  background-position:
+    calc(100% - 11px) 50%,
+    calc(100% - 7px) 50%;
+  background-size: 4px 4px;
+  background-repeat: no-repeat;
+  cursor: pointer;
+}
+.we-select:hover:not(:disabled),
+.we-input:hover:not(:disabled) {
+  border-color: var(--we-border-strong);
+}
+.we-input::placeholder {
+  color: var(--we-muted);
+}
+.we-select:disabled,
+.we-input:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.we-input:focus,
+.we-select:focus-visible {
+  border-color: var(--we-accent);
+}
+
+.we-sep {
+  flex: none;
+  align-self: center;
+  width: 1px;
+  height: 20px;
+  margin: 0 var(--we-space-2);
+  background: var(--we-border);
+}
+
+.we-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--we-space-2) var(--we-space-3);
+}
+
+.we-menu {
+  display: flex;
+  flex-direction: column;
+  min-width: 180px;
+  padding: var(--we-space-2);
+  border: 1px solid var(--we-border);
+  border-radius: var(--we-radius-lg);
+  background: var(--we-raised);
+  color: var(--we-fg);
+  box-shadow: var(--we-shadow-2);
+}
+.we-menu > button,
+.we-menu-item {
+  display: flex;
+  align-items: center;
+  gap: var(--we-space-3);
+  height: var(--we-control-h);
+  padding: 0 var(--we-space-3);
+  border: 0;
+  border-radius: var(--we-radius-sm);
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.we-menu > button:hover:not(:disabled),
+.we-menu-item:hover:not(:disabled) {
+  background: var(--we-hover);
+}
+.we-menu > button:disabled,
+.we-menu-item:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+/* Divider between groups of menu items: `<hr class="we-menu-sep">` or `<div class="we-menu-sep" role="separator">`. */
+.we-menu-sep,
+.we-menu > [role="separator"] {
+  flex: none;
+  height: 0;
+  margin: var(--we-space-1) calc(-1 * var(--we-space-1));
+  border: 0;
+  border-top: 1px solid var(--we-divider);
+}
+
+.we-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--we-space-2);
+  height: 20px;
+  padding: 0 var(--we-space-3);
+  border-radius: 999px;
+  background: var(--we-hover);
+  color: var(--we-fg-2);
+  font-size: var(--we-text-xs);
+  font-weight: 500;
+  line-height: 1;
+  white-space: nowrap;
+}
+button.we-chip {
+  border: 0;
+  font-family: inherit;
+  cursor: pointer;
+}
+button.we-chip:hover {
+  background: var(--we-pressed);
+}
+.we-chip--added {
+  background: var(--we-added-bg);
+  color: var(--we-added);
+}
+.we-chip--modified {
+  background: var(--we-modified-bg);
+  color: var(--we-modified);
+}
+.we-chip--removed {
+  background: var(--we-removed-bg);
+  color: var(--we-removed);
+}
+.we-chip--moved {
+  background: var(--we-moved-bg);
+  color: var(--we-moved);
+}
+.we-chip--success {
+  background: var(--we-success-bg);
+  color: var(--we-success);
+}
+.we-chip--warning {
+  background: var(--we-warning-bg);
+  color: var(--we-warning);
+}
+.we-chip--danger {
+  background: var(--we-danger-bg);
+  color: var(--we-danger);
+}
+.we-chip--info {
+  background: var(--we-info-bg);
+  color: var(--we-info);
+}
+
+.we-notice {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--we-space-3);
+  padding: var(--we-space-3) var(--we-space-4);
+  border: 1px solid var(--we-border);
+  border-left-width: 3px;
+  border-radius: var(--we-radius);
+  background: var(--we-bg);
+  color: var(--we-fg);
+  font-size: var(--we-text-sm);
+}
+.we-notice--info {
+  border-color: var(--we-info);
+  background: var(--we-info-bg);
+}
+.we-notice--warning {
+  border-color: var(--we-warning);
+  background: var(--we-warning-bg);
+}
+.we-notice--error {
+  border-color: var(--we-danger);
+  background: var(--we-danger-bg);
+}
+
+/* One focus ring for every control in the editor. */
+.we-shell :focus-visible,
+.we-theme :focus-visible {
+  outline: 2px solid var(--we-focus);
+  outline-offset: 1px;
+}
+.we-shell :focus:not(:focus-visible) {
+  outline: none;
+}
