@@ -22,6 +22,8 @@ services:
       - "${WOLF_WORKSPACE_BIND:-127.0.0.1}:8787:8787"
     environment:
       WOLF_LICENSE_KEY: "${WOLF_LICENSE_KEY:-}"
+      # The licence the engine installer names on the first start.
+      WOLF_INSTALL_TERMS: community-selfhost
     volumes:
       - workspace-data:/data
     restart: unless-stopped

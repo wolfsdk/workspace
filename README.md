@@ -41,9 +41,17 @@ The four commands above are the whole install. The image (`ghcr.io/wolfsdk/works
 built for `linux/amd64` and holds only this repository's code. On the first start the container:
 
 - installs the pinned Wolf engine (0.2.25) from `https://wolfsdk.com/install` into the data volume,
-  under the engine's own licence. Later starts reuse it. To use your own `wolf` executable instead,
-  mount it and name it with `WOLF_ENGINE`.
+  under the Wolf Community Self-Host licence, and prints where it keeps the licence text
+  (`bin/wolf-licenses/0.2.25/LICENSE-WOLF-COMMUNITY-SELFHOST.txt` in the volume). Later starts
+  reuse it. To use your own `wolf` executable instead, mount it and name it with `WOLF_ENGINE`.
 - creates one user, `Owner`, and prints that user's sign-in address to the log.
+
+On an Apple Silicon Mac the image runs under x86-64 emulation and needs Rosetta. Under QEMU
+emulation the server starts, prints the sign-in address, then crashes within seconds with
+`CPU lacks AVX support` and stops answering. With colima, start the virtual machine with
+`colima start --vm-type vz --vz-rosetta`. With Docker Desktop, keep "Use Rosetta for x86_64/amd64
+emulation on Apple Silicon" switched on. The first run was timed on colima 0.10.3 with Rosetta;
+Docker Desktop has not been timed yet.
 
 Rooms, document blobs, the engine and the actor table (`actors.json`, a map of bearer token to
 actor) live in the `workspace-data` volume. Browsers load the engine's WebAssembly module from

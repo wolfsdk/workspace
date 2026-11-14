@@ -14,11 +14,14 @@ if [ -n "${WOLF_ENGINE:-}" ]; then
     [ -x "$engine" ] || { echo "error: WOLF_ENGINE=$engine is not an executable file" >&2; exit 1; }
 else
     # The engine is closed source and is not part of this image. The installer verifies the download's
-    # SHA-256 and keeps the engine and its licence in the data volume, so this runs once per version.
+    # SHA-256 and keeps the engine and its licences in the data volume, so this runs once per version.
+    # A self-hosted workspace runs the engine under the Community Self-Host licence, so the installer
+    # is told to name that one.
     engine=$data/bin/wolf
     if [ ! -x "$engine" ] || [ ! -d "$data/bin/wolf-licenses/$WOLF_VERSION" ]; then
         echo "Installing the Wolf engine $WOLF_VERSION from $WOLF_INSTALL_URL into $data/bin"
-        curl -fsSL "$WOLF_INSTALL_URL" | env WOLF_INSTALL_DIR="$data/bin" WOLF_VERSION="$WOLF_VERSION" sh
+        curl -fsSL "$WOLF_INSTALL_URL" | env WOLF_INSTALL_DIR="$data/bin" WOLF_VERSION="$WOLF_VERSION" \
+            WOLF_INSTALL_TERMS="${WOLF_INSTALL_TERMS:-community-selfhost}" sh
     fi
 fi
 
