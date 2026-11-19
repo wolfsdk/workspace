@@ -469,6 +469,17 @@ describe("the process", () => {
     }
   });
 
+  test("serve takes --live-slide-text-attest as the sha256 of a deck, and refuses what is not one", async () => {
+    const actors = join(dir, "actors.json");
+    await writeFile(actors, JSON.stringify({ "token-a": { kind: "user", id: "alice", name: "Alice" } }));
+    const base = ["serve", "--db", join(dir, "rooms.sqlite"), "--blobs", join(dir, "blobs"), "--engine", "wolf", "--actors", actors];
+    for (const digest of ["cace0634", "g".repeat(64), "", "a".repeat(65)]) {
+      const { code, err } = await run(...base, "--live-slide-text-attest", digest);
+      expect(code).toBe(EXIT_ERROR);
+      expect(err).toContain("--live-slide-text-attest takes the sha256 of a deck");
+    }
+  });
+
   test("serve with the read-only flags reports why on /api/me and refuses a write with 402", async () => {
     const actors = join(dir, "actors.json");
     const alice = { kind: "user", id: "alice", name: "Alice" };

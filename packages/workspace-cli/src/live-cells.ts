@@ -25,8 +25,24 @@
 // by the route before anything here runs.
 import type { RoomActor, RoomHead, RoomSessionEntry } from "@wolfsdk/protocol/workspace";
 import { ROOM_REVISION_MISMATCH } from "@wolfsdk/protocol/workspace";
-import { EngineFault, EngineRefusal, type EngineWorker, type RoomFailure, type RoomService, type WorkerPool } from "@wolfsdk/server";
+import { EngineFault, type EngineWorker, type RoomService, type WorkerPool } from "@wolfsdk/server";
 import { ask, askWithSegments } from "./engine.ts";
+import {
+  bad,
+  closeDocument,
+  documentLog,
+  engineReply,
+  fail,
+  isObject,
+  type LiveCaller,
+  type LiveError,
+  type LiveReply,
+  Lru,
+  provenSpan,
+  STRUCTURE_CONFLICT,
+  Writable,
+  WriteQueue,
+} from "./live-shared.ts";
 
 /** What one cell holds, as live cells reads and writes it: a formula keeps its leading `=`. `null` is a blank cell. */
 export type CellValue = { string: string } | { number: number } | { boolean: boolean } | { formula: string } | null;
@@ -41,23 +57,8 @@ export type LiveCellsOptions = {
   now?: () => number;
 };
 
-/** Who is calling, as the route resolved it from the token: a member, never a guest or an agent. */
-export type LiveCaller = {
-  roomId: string;
-  doc: string;
-  actor: RoomActor;
-  /** The refusal of a write now (a read-only workspace), or `null`. */
-  refusal: RoomFailure | null;
-};
-
-type LiveError = { status: number; error: { code: string; message: string; [member: string]: unknown } };
-
-/** What the route sends: a JSON body, an empty 204, an error body with its status, or a failure of the room service. */
-export type LiveReply = { status: 200; body: unknown } | { status: 204 } | LiveError | { failure: RoomFailure };
-
 export const LIVE_CELLS_UNATTESTED = "LIVE_CELLS_UNATTESTED";
 export const CELL_CONFLICT = "CELL_CONFLICT";
-export const STRUCTURE_CONFLICT = "STRUCTURE_CONFLICT";
 export const CELL_UNSUPPORTED = "CELL_UNSUPPORTED";
 export const UNSUPPORTED_FORMULA = "UNSUPPORTED_FORMULA";
 
@@ -71,7 +72,6 @@ export const PRESENCE_TTL_MS = 30_000;
 export const PRESENCE_MAX = 64;
 const WORKBOOKS_MAX = 256;
 const MAX_ATTEMPTS = 4;
-const MAX_REBASE = 256;
 const WINDOWS_CAP = 64;
 const STRUCTURES_CAP = 64;
 const INHERITED_CAP = 1024;
@@ -270,8 +270,6 @@ type SheetInfo = { id: number; name: string; visible: boolean };
 type SeenCell = { a1: string; row: number; col: number; value: CellValue; display: string; editable: boolean };
 type View = { sheet: number; sheets: SheetInfo[]; merged: string[]; cells: SeenCell[] };
 
-const isObject = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
-
 /** The cell the engine reports, in the terms of a write: a formula by its text (never the value it calculated), else the
  * typed value. A cell that holds something a write could not put back is `editable: false`, and has no value. */
 function seeCell(raw: unknown): SeenCell | null {
@@ -296,31 +294,6 @@ function seeCell(raw: unknown): SeenCell | null {
   return seen(null, false);
 }
 
-/** Least-recently-used map, for what is cheap to read again. */
-class Lru<V> {
-  readonly #map = new Map<string, V>();
-  readonly capacity: number;
-  constructor(capacity: number) {
-    this.capacity = capacity;
-  }
-  get(key: string): V | undefined {
-    const value = this.#map.get(key);
-    if (value !== undefined) {
-      this.#map.delete(key);
-      this.#map.set(key, value);
-    }
-    return value;
-  }
-  set(key: string, value: V): void {
-    this.#map.delete(key);
-    this.#map.set(key, value);
-    if (this.#map.size > this.capacity) this.#map.delete(this.#map.keys().next().value as string);
-  }
-  has(key: string): boolean {
-    return this.get(key) !== undefined;
-  }
-}
-
 /** The sheets of a head from the structure the engine extracts: their place (the id live cells uses), name and visibility. */
 function sheetsOfStructure(structure: unknown): SheetInfo[] {
   if (!isObject(structure) || !Array.isArray(structure.sheets)) throw new EngineFault("the engine's structure of the workbook has no sheets");
@@ -333,25 +306,6 @@ function sheetsOfStructure(structure: unknown): SheetInfo[] {
 }
 
 // --- the eligibility of a head -----------------------------------------------------------------------------------
-
-/** The digests of the bytes this server writes cells of. The operator's are fixed; the digests of this server's own
- * writes are kept up to a limit, oldest out first: a head that dropped out needs attesting again. */
-class Writable {
-  readonly #attested: ReadonlySet<string>;
-  readonly #inherited = new Lru<true>(INHERITED_CAP);
-  constructor(attested: readonly string[]) {
-    for (const digest of attested) {
-      if (!/^[0-9a-f]{64}$/i.test(digest)) throw new RangeError(`${JSON.stringify(digest)} is not a sha256 digest (64 hexadecimal digits)`);
-    }
-    this.#attested = new Set(attested.map((digest) => digest.toLowerCase()));
-  }
-  has(sha256: string): boolean {
-    return this.#attested.has(sha256) || this.#inherited.has(sha256);
-  }
-  inherit(sha256: string): void {
-    this.#inherited.set(sha256, true);
-  }
-}
 
 // --- selections --------------------------------------------------------------------------------------------------
 
@@ -409,15 +363,6 @@ class Selections {
 
 // --- the service -------------------------------------------------------------------------------------------------
 
-const fail = (status: number, code: string, message: string, extra: Record<string, unknown> = {}): LiveError => ({ status, error: { code, message, ...extra } });
-const bad = (message: string): LiveError => fail(400, "BAD_REQUEST", message);
-
-function engineReply(e: unknown): LiveReply {
-  if (e instanceof EngineRefusal) return { failure: { code: e.isEngineFailure || e.isLicense ? "ENGINE_FAILED" : "BAD_REQUEST", message: e.message } };
-  if (e instanceof EngineFault) return { failure: { code: "ENGINE_FAILED", message: e.message } };
-  throw e;
-}
-
 const SET_TARGET = /^sheet:(#[0-9]+|[^/#][^/]*)\/cell:([A-Za-z]{1,3}[0-9]{1,7})$/;
 
 /** The cells a session entry wrote, when it is nothing but `set`s of single cells (the kind of write this server makes), else null. */
@@ -457,20 +402,12 @@ const HISTORY_CHANGED = "the workbook changed in ways other than the writes of s
  * the span holds. Only a span that is proven so can have written the base cell, and that is a cell conflict, even when
  * the cell came back to what was read. Otherwise the span is disjoint from the cell. */
 function proveSpan(log: readonly RoomSessionEntry[], base: { revision: number; sheet: number; cell: Cell }, head: RoomHead, sheets: readonly SheetInfo[]): Proof {
-  const structure = (message: string): Proof => ({ conflict: "structure", message });
-  const span = head.revision - base.revision;
-  if (span > MAX_REBASE) return structure(`the workbook has ${span} newer revisions than your read: read it again`);
-  const entries = log.filter((entry) => entry.revision > base.revision && entry.revision <= head.revision).sort((a, b) => a.revision - b.revision);
-  if (entries.length !== span || entries.some((entry, i) => entry.revision !== base.revision + 1 + i)) return structure(HISTORY_CHANGED);
-  // The entry before the first one pins the revision of the read to the bytes the chain starts from.
-  const anchor = base.revision === 0 ? null : log.find((entry) => entry.revision === base.revision);
-  if (base.revision > 0 && (anchor === undefined || anchor === null || entries[0]!.base_sha256 !== anchor.result_sha256)) return structure(HISTORY_CHANGED);
-  for (let i = 1; i < entries.length; i++) if (entries[i]!.base_sha256 !== entries[i - 1]!.result_sha256) return structure(HISTORY_CHANGED);
-  if (entries.length > 0 && entries[entries.length - 1]!.result_sha256 !== head.sha256) return structure(HISTORY_CHANGED);
+  const entries = provenSpan(log, base.revision, head, "workbook", HISTORY_CHANGED);
+  if (typeof entries === "string") return { conflict: "structure", message: entries };
   let touched = false;
   for (const entry of entries) {
     const written = cellsWritten(entry, sheets);
-    if (written === null) return structure(HISTORY_CHANGED);
+    if (written === null) return { conflict: "structure", message: HISTORY_CHANGED };
     if (written.some((w) => w.sheet === base.sheet && w.cell.row === base.cell.row && w.cell.col === base.cell.col)) touched = true;
   }
   return touched ? { conflict: "cell" } : { conflict: null };
@@ -488,12 +425,12 @@ export class LiveCells {
   readonly #views = new Lru<View>(WINDOWS_CAP);
   readonly #structures = new Lru<SheetInfo[]>(STRUCTURES_CAP);
   readonly #flights = new Map<string, Promise<View | string>>();
-  readonly #writes = new Map<string, Promise<void>>();
+  readonly #queue = new WriteQueue();
 
   constructor(service: RoomService, options: LiveCellsOptions) {
     this.#service = service;
     this.#pool = options.pool;
-    this.#writable = new Writable(options.attested);
+    this.#writable = new Writable(options.attested, INHERITED_CAP);
     this.#selections = new Selections(options.now ?? Date.now);
   }
 
@@ -577,17 +514,7 @@ export class LiveCells {
   put(caller: LiveCaller, body: Record<string, unknown>): Promise<LiveReply> {
     const parsed = this.#parseWrite(body);
     if ("status" in parsed) return Promise.resolve(parsed);
-    const key = `${caller.roomId}\0${caller.doc}`;
-    const turn = (this.#writes.get(key) ?? Promise.resolve()).then(() => this.#write(caller, parsed));
-    const tail = turn.then(
-      () => undefined,
-      () => undefined,
-    );
-    this.#writes.set(key, tail);
-    void tail.then(() => {
-      if (this.#writes.get(key) === tail) this.#writes.delete(key);
-    });
-    return turn;
+    return this.#queue.run(caller.roomId, caller.doc, () => this.#write(caller, parsed));
   }
 
   async #write(caller: LiveCaller, parsed: Parsed): Promise<LiveReply> {
@@ -621,7 +548,7 @@ export class LiveCells {
       // The history is read once, and only when it is needed: for a read that is behind the head, or for a draft that is
       // being reapplied (written at a revision before the read it is now written over).
       if (draftRevision < revision || revision < head.revision) {
-        const log = await this.#log(caller);
+        const log = await documentLog(this.#service, caller);
         if ("failure" in log) return log;
         // A reapplied draft: what changed since it was written must be nothing but writes of single cells. Its writes of
         // this very cell are what the caller has since read and resolved, so only they are let through.
@@ -680,13 +607,6 @@ export class LiveCells {
     return { revision, draftRevision, sheet, a1: cellName(cell), cell, expected, value };
   }
 
-  /** The entries of the session log that are this document's, or why the room could not be read. */
-  async #log(caller: LiveCaller): Promise<RoomSessionEntry[] | { failure: RoomFailure }> {
-    const room = await this.#service.getRoom(caller.roomId, caller.actor);
-    if (!room.ok) return { failure: room.error };
-    return room.value.session_log.filter((entry) => entry.doc_name === caller.doc);
-  }
-
   #unattested(head: RoomHead): string {
     return (
       `the bytes of ${head.name} at revision ${head.revision} (sha256 ${head.sha256}) are not attested for live cell writes: ` +
@@ -743,7 +663,7 @@ export class LiveCells {
         if (!Array.isArray(viewport.merged) || viewport.merged.some((range) => typeof range !== "string")) throw new EngineFault("the engine described merged ranges that are not text");
         return { sheet, sheets, merged: viewport.merged, cells } satisfies View;
       } finally {
-        await this.#close(worker, doc);
+        await closeDocument(worker, doc);
       }
     });
   }
@@ -758,16 +678,6 @@ export class LiveCells {
     } catch (e) {
       if (e instanceof SyntaxError) throw new EngineFault("the structure of the workbook is not JSON");
       throw e;
-    }
-  }
-
-  /** A worker that cannot say it closed the document is not reused. */
-  async #close(worker: EngineWorker, doc: number): Promise<void> {
-    try {
-      const { body } = await worker.call({ cmd: "close", doc });
-      if (!body.ok || "error" in body) worker.discard();
-    } catch {
-      worker.discard();
     }
   }
 }

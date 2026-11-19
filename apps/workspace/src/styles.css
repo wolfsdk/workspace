@@ -1797,6 +1797,85 @@ textarea.input {
   background: hsl(var(--peer-hue) 65% 45%);
 }
 
+/* Live slide text: the text runs of one shape, each in a field of its own. */
+
+.live-shape {
+  flex: none;
+  width: 280px;
+}
+
+.live-shape select {
+  height: var(--we-control-h-sm);
+  font-size: var(--we-text-sm);
+}
+
+.live-hint {
+  min-width: 0;
+  overflow: hidden;
+  font-size: var(--we-text-xs);
+  color: var(--we-muted);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.slide-runs {
+  display: grid;
+  gap: var(--we-space-2);
+  max-width: 760px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.slide-runs.is-loading {
+  opacity: 0.6;
+  transition: opacity var(--we-duration) var(--we-ease);
+}
+
+.slide-run {
+  display: grid;
+  grid-template-columns: 56px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--we-space-2) var(--we-space-3);
+}
+
+.slide-run-name {
+  font-size: var(--we-text-xs);
+  font-weight: 600;
+  color: var(--we-muted);
+}
+
+.slide-run-input[readonly] {
+  background: var(--we-surface);
+  color: var(--we-muted);
+}
+
+.slide-run.is-dirty .slide-run-input {
+  border-color: var(--we-warning);
+  background: var(--we-warning-bg);
+}
+
+.slide-run.is-saving .slide-run-input {
+  opacity: 0.7;
+}
+
+.slide-run.is-conflict .slide-run-input,
+.slide-run.is-error .slide-run-input {
+  border-color: var(--we-danger);
+  background: var(--we-danger-bg);
+}
+
+.slide-run-note {
+  grid-column: 2 / -1;
+  margin: 0;
+  font-size: var(--we-text-sm);
+  color: var(--we-muted);
+}
+
+.slide-run-note.is-error {
+  color: var(--we-danger);
+}
+
 /* ---- Sheets, switcher, toasts ------------------------------------------ */
 
 .gate {
