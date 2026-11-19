@@ -50,6 +50,58 @@ export function ActorBadge({ actor, you = false }: { actor: RoomActor; you?: boo
   );
 }
 
+export type SessionControlsProps = {
+  actor: RoomActor;
+  /** The account a hosting front signed in; null on a self-hosted server. */
+  account: { email: string; name: string } | null;
+  /** The tooltip of the signed-in actor. */
+  title?: string;
+  /** Opens the token dialog. Absent behind a hosting front: the front holds the session and the page has no token. */
+  onSwitchToken?: () => void;
+  /** The hosting front's page where the signed-in person makes agent tokens. Absent when the front names none. */
+  accountPage?: string;
+  /** The hosting front's page of the plan and the trial's dates. Absent when the front names none. */
+  plansPage?: string;
+  onSignOut(): void;
+  signingOut?: boolean;
+};
+
+/** Who is signed in, in the top bar, with the way to switch token (self-hosted only) and to sign out. Behind a hosting
+ * front that names them, also the way to the page that makes agent tokens and to the page of the plan. */
+export function SessionControls({ actor, account, title, onSwitchToken, accountPage, plansPage, onSignOut, signingOut = false }: SessionControlsProps) {
+  return (
+    <>
+      <span class="me" title={title}>
+        <ActorBadge actor={actor} />
+        <span class={`role role--${actor.kind}`}>{actor.kind === "agent" ? "Agent" : "User"}</span>
+        {account ? (
+          <span class="status status--muted" title={`Signed in as ${account.name || account.email}`}>
+            {account.email || account.name}
+          </span>
+        ) : null}
+      </span>
+      {onSwitchToken ? (
+        <button type="button" class="button button--small button--quiet" onClick={onSwitchToken}>
+          Switch token
+        </button>
+      ) : null}
+      {accountPage ? (
+        <a class="button button--small button--quiet" href={accountPage} title="Make an agent token: the account page shows the address an MCP client connects to">
+          Connect an agent
+        </a>
+      ) : null}
+      {plansPage ? (
+        <a class="button button--small button--quiet" href={plansPage} title="Your plan, and when the trial ends">
+          Plan
+        </a>
+      ) : null}
+      <button type="button" class="button button--small button--quiet" disabled={signingOut} onClick={onSignOut}>
+        {signingOut ? "Signing out" : "Sign out"}
+      </button>
+    </>
+  );
+}
+
 /** A Pacific time, with the instant in the tooltip and the `datetime` attribute. */
 export function Time({ at }: { at: string }) {
   return (

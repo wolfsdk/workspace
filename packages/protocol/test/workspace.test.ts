@@ -1040,6 +1040,25 @@ describe("mcp: tool list and budget", () => {
     expect(tool("workspace_list").required).toBeUndefined();
     expect(tool("doc_create").properties.format.enum).toEqual(["docx", "xlsx", "pptx"]);
   });
+
+  // A model endpoint that decodes tool calls against the schema treats an object with no
+  // additionalProperties as closed: with ops declared as `{op}` only, it can never write the
+  // target or value of an op and never ends the call.
+  test("every object in a tool schema says whether it is open, and edit ops are open", () => {
+    const undeclared: string[] = [];
+    const walk = (node: Json, path: string) => {
+      if (Array.isArray(node)) return node.forEach((child, i) => walk(child, `${path}[${i}]`));
+      if (node === null || typeof node !== "object") return;
+      if (node.type === "object" && typeof node.additionalProperties !== "boolean") undeclared.push(path);
+      for (const [key, child] of Object.entries(node)) walk(child as Json, `${path}.${key}`);
+    };
+    for (const tool of MCP_WORKSPACE_TOOLS) walk(tool.inputSchema as Json, tool.name);
+    expect(undeclared).toEqual([]);
+    for (const name of ["doc_edit", "doc_create"]) {
+      const schema = MCP_WORKSPACE_TOOLS.find((t) => t.name === name)?.inputSchema as Json;
+      expect(schema.properties.ops.items.additionalProperties).toBe(true);
+    }
+  });
 });
 
 describe("mcp: tools/call", () => {
@@ -1328,7 +1347,7 @@ describe("pack: determinism", () => {
 
 const PACKAGE = join(import.meta.dir, "..");
 const REPO = join(PACKAGE, "../../../..");
-const SCHEMA_FILES = ["reactor-pipe.v1.schema.json", "room.v1.schema.json", "mcp-workspace.v1.schema.json", "pack.v1.schema.json"];
+const SCHEMA_FILES = ["reactor-pipe.v1.schema.json", "room.v1.schema.json", "mcp-workspace.v1.schema.json", "pack.v1.schema.json", "assistant.v1.schema.json"];
 const readSchema = (file: string): Json => JSON.parse(readFileSync(join(PACKAGE, "schemas", file), "utf8")) as Json;
 
 /** Keywords the evaluator behind `validateSchema` reads, annotations, and the ones a validator here enforces by hand. */
@@ -1337,6 +1356,7 @@ const ANNOTATIONS = ["$schema", "$id", "$defs", "title", "description", "default
 const HAND_CHECKED: Record<string, string[]> = {
   "reactor-pipe.v1.schema.json": ["maximum", "exclusiveMinimum"],
   "mcp-workspace.v1.schema.json": ["minItems"],
+  "assistant.v1.schema.json": ["maxLength"],
 };
 
 function keywordProblems(node: unknown, path: string, allowed: Set<string>, out: string[]): void {
@@ -1372,11 +1392,12 @@ describe("schemas", () => {
       expect(typeof schema.description).toBe("string");
       ids[file] = schema.$id;
     }
-    expect(new Set(Object.values(ids)).size).toBe(4);
+    expect(new Set(Object.values(ids)).size).toBe(5);
     expect(workspace.REACTOR_PIPE_SCHEMA.$id).toBe(ids["reactor-pipe.v1.schema.json"]);
     expect(workspace.ROOM_SCHEMA.$id).toBe(ids["room.v1.schema.json"]);
     expect(workspace.MCP_WORKSPACE_SCHEMA.$id).toBe(ids["mcp-workspace.v1.schema.json"]);
     expect(workspace.PACK_SCHEMA.$id).toBe(ids["pack.v1.schema.json"]);
+    expect(workspace.ASSISTANT_SCHEMA.$id).toBe(ids["assistant.v1.schema.json"]);
   });
 
   test("the contract of each schema is the constant the module exports", () => {
@@ -1384,6 +1405,7 @@ describe("schemas", () => {
     expect((readSchema("room.v1.schema.json").$defs.roomState.properties.contract as Json).const).toBe(ROOM_CONTRACT);
     expect((readSchema("pack.v1.schema.json").properties.contract as Json).const).toBe(PACK_CONTRACT);
     expect(readSchema("mcp-workspace.v1.schema.json").description).toContain(MCP_WORKSPACE_CONTRACT);
+    for (const def of ["turn", "usageSummary"]) expect((readSchema("assistant.v1.schema.json").$defs[def].properties.contract as Json).const).toBe(workspace.ASSISTANT_CONTRACT);
   });
 
   test("every keyword is one a validator reads, and every $ref resolves inside its own file", () => {
@@ -1406,10 +1428,13 @@ describe("schemas", () => {
     expect(pipe).toContain('"maximum"');
     for (const file of ["room.v1.schema.json", "pack.v1.schema.json"]) expect(JSON.stringify(readSchema(file))).not.toMatch(/"(maximum|minItems|maxItems|exclusiveMinimum|uniqueItems|oneOf|allOf|if|not)"/);
     expect(JSON.stringify(readSchema("mcp-workspace.v1.schema.json"))).not.toMatch(/"(maximum|maxItems|exclusiveMinimum|uniqueItems|oneOf|allOf|if|not)"/);
+    const assistant = JSON.stringify(readSchema("assistant.v1.schema.json"));
+    expect(assistant).toContain(`"maxLength":${workspace.ASSISTANT_REQUEST_MAX_CHARS}`);
+    expect(assistant).not.toMatch(/"(maximum|minItems|maxItems|exclusiveMinimum|uniqueItems|oneOf|allOf|if|not)"/);
   });
 
-  test("the exports of the workspace barrel are the four contracts, reachable from the package index", () => {
-    for (const name of ["validateReactorPipeEnvelope", "validateRoomSnapshot", "validateMcpToolCall", "validatePackManifest", "mcpToolsTokenEstimate", "MCP_WORKSPACE_TOOLS"])
+  test("the exports of the workspace barrel are the five contracts, reachable from the package index", () => {
+    for (const name of ["validateReactorPipeEnvelope", "validateRoomSnapshot", "validateMcpToolCall", "validatePackManifest", "validateAssistantTurn", "mcpToolsTokenEstimate", "MCP_WORKSPACE_TOOLS"])
       expect(typeof (workspace as Json)[name]).not.toBe("undefined");
     for (const name of Object.keys(workspace)) expect((index as Json)[name]).toBe((workspace as Json)[name]);
     const manifest = JSON.parse(readFileSync(join(PACKAGE, "package.json"), "utf8")) as Json;
@@ -1435,7 +1460,7 @@ describe("forbidden strings", () => {
   ];
 
   test("the contract sources and schemas hold none of them", () => {
-    expect(sources.length).toBe(5);
+    expect(sources.length).toBe(6);
     for (const file of [...sources, ...schemas]) {
       const text = readFileSync(file, "utf8");
       for (const [pattern, what] of FORBIDDEN) expect(pattern.test(text) ? `${what} in ${file}` : "").toBe("");

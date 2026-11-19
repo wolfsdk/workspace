@@ -1,6 +1,6 @@
 /** @jsxImportSource preact */
 // Left rail: the room, its documents (with upload), and the linked pack.
-import { useRef, useState } from "preact/hooks";
+import { useEffect, useRef, useState } from "preact/hooks";
 import type { PackStatus, RoomRow } from "../lib/api.ts";
 import type { DocumentSummary } from "../lib/room-state.ts";
 import { roomIdFrom } from "../lib/session.ts";
@@ -27,7 +27,9 @@ export function LeftRail(props: LeftRailProps) {
     <nav class="rail rail--left" aria-label="Rooms and documents">
       <RoomSection {...props} />
       <DocumentSection {...props} />
-      {props.pack ? <PackCard pack={props.pack} busy={props.packBusy} onRefresh={props.onRefreshPack} /> : null}
+      {props.pack ? (
+        <PackCard pack={props.pack} roomId={props.roomId} documents={props.documents} busy={props.packBusy} onRefresh={props.onRefreshPack} />
+      ) : null}
     </nav>
   );
 }
@@ -204,19 +206,52 @@ function DocumentSection({ roomId, documents, activeDoc, uploading, onSelectDoc,
 
 const BINDING_TONE = { fresh: "success", stale: "warning", refreshed: "info" } as const;
 
-function PackCard({ pack, busy, onRefresh }: { pack: PackStatus; busy: boolean; onRefresh(): void }) {
-  const stale = pack.report.bindings.filter((b) => b.status === "stale").length;
+type PackCardProps = { pack: PackStatus; roomId: string | null; documents: DocumentSummary[]; busy: boolean; onRefresh(): void };
+
+/** The pack judged against the heads of the open room, judged again whenever a head moves: a refresh that was
+ * approved and committed shows its bindings fresh at once, and an edit to a source shows them stale. */
+function PackCard({ pack, roomId, documents, busy, onRefresh }: PackCardProps) {
+  const [status, setStatus] = useState(pack);
+  const [problem, setProblem] = useState<string | null>(null);
+  const heads = documents.map((d) => `${d.name}@${d.revision}`).join("\n");
+  useEffect(() => {
+    setStatus(pack);
+  }, [pack]);
+  useEffect(() => {
+    const reload = pack.reload;
+    if (reload === undefined) return;
+    let current = true;
+    reload(roomId).then(
+      (next) => {
+        if (!current || next === null) return;
+        setStatus(next);
+        setProblem(null);
+      },
+      (e: unknown) => {
+        if (current) setProblem(e instanceof Error ? e.message : String(e));
+      },
+    );
+    return () => {
+      current = false;
+    };
+  }, [pack, roomId, heads]);
+  const stale = status.report.bindings.filter((b) => b.status === "stale").length;
   return (
     <section class="rail-section pack-card" aria-labelledby="pack-title">
       <header class="rail-heading">
         <h2 id="pack-title">Linked pack</h2>
-        <span class={`status status--${pack.report.fresh ? "success" : "warning"}`}>{pack.report.fresh ? "Fresh" : `${stale} stale`}</span>
+        <span class={`status status--${status.report.fresh ? "success" : "warning"}`}>{status.report.fresh ? "Fresh" : `${stale} stale`}</span>
       </header>
-      <p class="pack-id" title={pack.dir}>
-        {pack.report.pack_id}
+      <p class="pack-id" title={status.room ? `${status.dir}, against the heads of ${status.room}` : status.dir}>
+        {status.report.pack_id}
       </p>
+      {problem === null ? null : (
+        <p class="hint" role="status">
+          Not checked against the room's heads: {problem}
+        </p>
+      )}
       <ul class="pack-bindings">
-        {pack.report.bindings.map((binding) => (
+        {status.report.bindings.map((binding) => (
           <li key={binding.binding_id} title={binding.notes.join("\n") || undefined}>
             <span class={`status-dot status-dot--${BINDING_TONE[binding.status]}`} aria-hidden="true" />
             <span class="pack-binding">{binding.binding_id}</span>

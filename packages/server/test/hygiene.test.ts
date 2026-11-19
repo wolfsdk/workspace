@@ -46,8 +46,8 @@ describe("the package", () => {
     expect(text.filter(({ content }) => content.includes("\u2014")).map(({ path }) => path)).toEqual([]);
   });
 
-  test("depends on the frozen protocol and nothing else outside the runtime", async () => {
+  test("depends on the frozen protocol, the assistant task loop over it, and nothing else outside the runtime", async () => {
     const manifest = JSON.parse(await readFile(join(ROOT, "package.json"), "utf8")) as { dependencies?: Record<string, string> };
-    expect(Object.keys(manifest.dependencies ?? {})).toEqual(["@wolfsdk/protocol"]);
+    expect(Object.keys(manifest.dependencies ?? {})).toEqual(["@wolfsdk/assistant", "@wolfsdk/protocol"]);
   });
 });

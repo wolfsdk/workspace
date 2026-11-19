@@ -202,7 +202,7 @@ element is not in the document.
 | `save()`                                       | The current revision's bytes. No download, no `wolf-save`.                                                                                                                                             |
 | `session()`                                    | The `SessionLog` of the open document, for native replay with `wolf transact`.                                                                                                                         |
 | `close()`                                      | Close the document; the engine keeps running.                                                                                                                                                          |
-| `openReview({ base, name, batches })`          | Open `base` as `open` does, then apply each batch in order as `apply` does (one history entry per batch, source `proposal`), a batch with `clock`/`timezone` at that time and zone. See Review mode.   |
+| `openReview({ base, name, batches })`          | Open `base` as `open` does, then apply each batch in order as `apply` does (one history entry per batch, source `proposal`), a batch with `clock`/`timezone` at that time and zone; then shows the last batch applied with its changes outlined, scrolled to the first. See Review mode. |
 | `submitReview()`                               | Submit as the review panel's Submit button does. Resolves `false` while a blocker stands or outside review mode, `true` once `wolf-review-submit` was handled.                                          |
 
 ## Events
@@ -265,7 +265,11 @@ proposal produced elsewhere at known times reproduces its bytes in a live-clock
 review. It resolves to `{ applied, refused }`: it stops at the first refused
 batch and reports its `index` and `error` (the earlier batches stay applied;
 `wolf-error` fires as for `apply`); `refused` is null when every batch applied.
-It rejects when `base` does not open.
+It rejects when `base` does not open. The last batch applied is then inspected
+as a click on its row in the changes panel does: its changes are outlined (a
+slide table cell in its own box) and the pages scroll to the first of them, so
+a change on slide 3 of a deck or on the second sheet of a workbook is in view
+when the review opens.
 
 Submit (the panel's button, or `submitReview()`) is refused while no document is
 open, a change is undecided, a rejection is still running, a rejection was

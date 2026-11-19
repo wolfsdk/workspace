@@ -24,6 +24,30 @@ describe("WorkspaceApi", () => {
     expect((calls[0]!.init?.headers as Record<string, string>).authorization).toBe("Bearer secret");
   });
 
+  test("behind a hosting front sends no Authorization header at all, and keeps the call's own headers", async () => {
+    const calls: Call[] = [];
+    const api = new WorkspaceApi("https://acme.cloud.example.com", null, async (url, init) => {
+      calls.push({ url, init });
+      return json(201, { room_id: "q4" });
+    });
+    await api.createRoom("q4");
+    await api.me();
+    for (const call of calls) expect(new Headers(call.init?.headers).has("authorization")).toBe(false);
+    expect(new Headers(calls[0]!.init?.headers).get("content-type")).toBe("application/json");
+  });
+
+  test("tells onUnauthorized of a 401 before throwing it, and of nothing else", async () => {
+    const seen: ApiError[] = [];
+    const respond = (status: number) => async () => json(status, { error: { code: status === 401 ? "UNAUTHORIZED" : "FORBIDDEN", message: "no" } });
+    const expired = new WorkspaceApi("https://acme.cloud.example.com", null, respond(401), { onUnauthorized: (e) => seen.push(e) });
+    const error = await expired.rooms().catch((e: unknown) => e);
+    expect(error).toMatchObject({ status: 401, code: "UNAUTHORIZED" });
+    expect(seen).toEqual([error as ApiError]);
+    const forbidden = new WorkspaceApi("https://acme.cloud.example.com", null, respond(403), { onUnauthorized: (e) => seen.push(e) });
+    expect(await forbidden.rooms().catch((e: unknown) => e)).toMatchObject({ status: 403 });
+    expect(seen).toHaveLength(1);
+  });
+
   test("turns an error body into an ApiError with its code", async () => {
     const { api } = fake(() => json(403, { error: { code: "FORBIDDEN", message: "only a user decides" } }));
     const error = await api.me().catch((e: unknown) => e);

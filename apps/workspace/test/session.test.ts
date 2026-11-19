@@ -3,16 +3,18 @@ import {
   describeEngine,
   engineSourceFor,
   formatOfFile,
+  hostedSessionOf,
   initialTheme,
   isReviewable,
   mentionsIn,
   roomIdFrom,
   shortSha,
+  startCredential,
   takeToken,
   THEME_KEY,
   TOKEN_KEY,
 } from "../src/lib/session.ts";
-import { ALICE, SCOUT } from "./fixtures.ts";
+import { ALICE, HOSTED, SCOUT } from "./fixtures.ts";
 
 function memory(initial: Record<string, string> = {}) {
   const values = new Map(Object.entries(initial));
@@ -35,6 +37,54 @@ describe("takeToken", () => {
   test("falls back to the stored token", () => {
     expect(takeToken("?room=q3", memory({ [TOKEN_KEY]: "stored" }))).toEqual({ token: "stored", search: "?room=q3" });
     expect(takeToken("", memory())).toEqual({ token: null, search: "" });
+  });
+});
+
+describe("hostedSessionOf", () => {
+  test("takes an answer of the contract's shape", () => {
+    expect(hostedSessionOf(JSON.parse(JSON.stringify({ ...HOSTED, extra: true })))).toEqual(HOSTED);
+  });
+
+  test("keeps the agent-token page and the plan page a front names, and drops one that leaves the page's origin", () => {
+    const named = { ...HOSTED, accountPage: "/-/account", plansPage: "/-/upgrade" };
+    expect(hostedSessionOf(JSON.parse(JSON.stringify(named)))).toEqual(named);
+    const elsewhere = hostedSessionOf({ ...HOSTED, accountPage: "https://elsewhere.example/account", plansPage: "//elsewhere.example/upgrade" });
+    expect(elsewhere).toEqual(HOSTED);
+    expect(Object.keys(elsewhere ?? {})).toEqual(["account", "signIn", "signOut"]);
+  });
+
+  test("refuses any other shape, and paths that leave the page's origin", () => {
+    for (const value of [
+      null,
+      "hosted",
+      [],
+      {},
+      { ...HOSTED, account: null },
+      { ...HOSTED, account: { email: "alice@acme.example" } },
+      { ...HOSTED, account: { email: 7, name: "Alice" } },
+      { ...HOSTED, signIn: undefined },
+      { ...HOSTED, signIn: "https://elsewhere.example/sign-in" },
+      { ...HOSTED, signIn: "//elsewhere.example/sign-in" },
+      { ...HOSTED, signOut: "/\\elsewhere.example" },
+      { ...HOSTED, signOut: "sign-out" },
+    ]) {
+      expect(hostedSessionOf(value)).toBeNull();
+    }
+  });
+});
+
+describe("startCredential", () => {
+  test("a token wins and asks nothing; without one the probe decides", async () => {
+    let asked = 0;
+    const probe = async () => {
+      asked += 1;
+      return HOSTED;
+    };
+    expect(await startCredential("abc", probe)).toEqual({ kind: "token", token: "abc" });
+    expect(asked).toBe(0);
+    expect(await startCredential(null, probe)).toEqual({ kind: "hosted", session: HOSTED });
+    expect(await startCredential(null, async () => null)).toBeNull();
+    expect(asked).toBe(1);
   });
 });
 

@@ -1,5 +1,7 @@
 /** @jsxImportSource preact */
-// The token sheet: the gate before the workspace, and the "Switch token" dialog inside it.
+// The token sheet: the gate before the workspace on a self-hosted server, and the "Switch token" dialog inside it.
+// Behind a hosting front the page has no token and shows neither: the front's own page signs people in, and
+// `HostedGate` covers a server that did not answer.
 import { useState } from "preact/hooks";
 import { Icon } from "./common.tsx";
 
@@ -70,6 +72,33 @@ export function SignIn({
           </button>
         </div>
       </form>
+    </div>
+  );
+}
+
+/** The gate behind a hosting front when the server did not say who the session stands for (a 401 has already sent
+ * the browser to the front's sign-in page): what went wrong and a way to try again. It never offers the token form,
+ * because the front holds the session and the page has no token. */
+export function HostedGate({ error, busy, onRetry }: { error: string; busy: boolean; onRetry(): void }) {
+  return (
+    <div class="gate">
+      <div class="sheet" role="alertdialog" aria-labelledby="hosted-gate-title">
+        <div class="sheet-brand">
+          <span class="brand-mark" aria-hidden="true">W</span>
+          <span class="brand-name">Wolf Workspace</span>
+        </div>
+        <h1 id="hosted-gate-title" class="sheet-title">
+          The workspace did not open
+        </h1>
+        <p class="sheet-error" role="alert">
+          {error}
+        </p>
+        <div class="sheet-actions">
+          <button type="button" class="button button--primary" disabled={busy} onClick={onRetry}>
+            {busy ? "Trying again" : "Try again"}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

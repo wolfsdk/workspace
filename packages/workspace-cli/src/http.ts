@@ -2,10 +2,13 @@
 // WebSocket, the MCP endpoint and, optionally, a local engine channel, all behind one `Bun.serve`.
 //
 //   WS      /ws                 `wolfsdk.room.v1`, the same contract and the same order guarantees as
-//                               `startWsServer` of `@wolfsdk/server`.
+//                               `startWsServer` of `@wolfsdk/server`, and `wolfsdk.assistant.v1` on the same
+//                               connection: the assistant of the workspace, which works through the tools of
+//                               the room's MCP server.
 //   GET     /mcp, POST, DELETE  MCP over Streamable HTTP (`createMcpHttpHandler` of `@wolfsdk/mcp`), one MCP
 //                               server per room, named by `?room=` or `X-Wolf-Room`.
-//   *       /api/...            rooms, documents, heads, snapshots, previews and the linked pack.
+//   *       /api/...            rooms, documents, heads, snapshots, previews, the linked pack and, at `GET /api/export`,
+//                               every document of one workspace as one ZIP archive (see `export.ts`).
 //   GET     /wasm/...           a local engine channel (`latest.txt`, `v<VERSION>/...`), when `wasmDir` is set.
 //   GET     everything else     the compiled workspace UI, with the single-page fallback to `index.html`.
 //
@@ -14,9 +17,10 @@
 // actor from the token alone and trusts nothing a client says about itself.
 import { stat } from "node:fs/promises";
 import { basename, extname, resolve, sep } from "node:path";
-import { createMcpHttpHandler, McpServer, type McpHttpHandler, type WorkspaceToolsOptions } from "@wolfsdk/mcp";
-import { checkPack, DirectoryStore, PackError, refreshPack, type XlsxEvaluator } from "@wolfsdk/packs";
+import { createMcpHttpHandler, McpServer, type McpHttpHandler, WorkspaceTools, type WorkspaceToolsOptions } from "@wolfsdk/mcp";
+import { checkPack, DirectoryStore, loadPack, PackError, type PackReader, planPack, refreshPack, type XlsxEvaluator } from "@wolfsdk/packs";
 import {
+  isAssistantMessage,
   type RoomActor,
   type RoomClientMessage,
   type RoomHead,
@@ -26,8 +30,25 @@ import {
   validateRoomEvent,
   type WorkspaceDocFormat,
 } from "@wolfsdk/protocol/workspace";
-import { type DocumentEngine, EngineFault, EngineRefusal, type Result, type RoomFailure, type RoomService, type RoomSubscription } from "@wolfsdk/server";
-import { directoryPackRefresher } from "./pack-refresher.ts";
+import {
+  type AssistantConnection,
+  assistantConnection,
+  AssistantService,
+  type AssistantServiceOptions,
+  type DocumentEngine,
+  EngineFault,
+  EngineRefusal,
+  readOnlyFailure,
+  type ReadOnlyMode,
+  type Result,
+  type RoomFailure,
+  type RoomService,
+  type RoomSubscription,
+} from "@wolfsdk/server";
+import workspacePackage from "../package.json" with { type: "json" };
+import { type PlanReadOnly, planReadOnlyMode } from "./errors.ts";
+import { type ExportRefusal, exportResponse, planExport } from "./export.ts";
+import { directoryPackManifests, directoryPackRefresher } from "./pack-refresher.ts";
 
 export type Authenticate = (request: Request) => RoomActor | null | Promise<RoomActor | null>;
 
@@ -42,6 +63,9 @@ export type WorkspacePackOptions = {
 
 /** The document a snapshot is made of: the head of one document of a room. */
 export type SnapshotInput = { format: WorkspaceDocFormat; name: string; bytes: Uint8Array };
+
+/** The model endpoint, the allowance and the store of the assistant: see `AssistantServiceOptions`. */
+export type WorkspaceAssistantOptions = Omit<AssistantServiceOptions, "rooms" | "tools">;
 
 export type WorkspaceServerOptions = {
   service: RoomService;
@@ -59,14 +83,34 @@ export type WorkspaceServerOptions = {
    * serves a shared link, which paints the pages without loading an engine. Without it that route answers 501. */
   snapshot?: (input: SnapshotInput) => Promise<unknown[]>;
   /** The engine hooks of the MCP tools (`inspector`, `renderer`, `packs`). The MCP endpoint is always on. */
-  mcp?: Omit<WorkspaceToolsOptions, "service" | "roomId">;
-  /** The pack `GET /api/pack` checks and `POST /api/pack/refresh` refreshes on disk, and the pack the MCP tool
-   * `pack_link_refresh` refreshes into the documents of a room unless `mcp.packs` says otherwise. */
+  mcp?: Omit<WorkspaceToolsOptions, "service" | "roomId" | "readOnly">;
+  /** The pack `GET /api/pack` checks against the heads of a room (`?room=`, else `defaultRoom`, else the only room;
+   * on disk while there is no room) and `POST /api/pack/refresh` refreshes on disk, and the pack the MCP tool
+   * `pack_link_refresh` refreshes into the documents of a room unless `mcp.packs` says otherwise. Its manifest is
+   * also the `packManifests` of the MCP tools, so `workspace_list` describes each binding, unless `mcp.packs` or
+   * `mcp.packManifests` says otherwise. */
   pack?: WorkspacePackOptions | null;
   /** The room `/mcp` attaches to when the request names none. */
   defaultRoom?: string | null;
-  /** The workspace of a room created without one. Default: the workspace of the first room, else `default`. */
+  /** The workspace of a room created without one, and the workspace `GET /api/export` exports when the request names
+   * none. Default: the workspace of the first room (for an export, the one workspace of the rooms), else `default`. */
   workspaceId?: string | null;
+  /** The workspace is read-only: the room service refuses every write (give `RoomServer` the same value), and this
+   * server answers a write with that refusal before it parses the request, tells the MCP write tools, and reports
+   * the mode as `readOnly` on `GET /api/me` so a client can say why and where to go. Reads, the export and joining
+   * a room keep working. */
+  readOnly?: ReadOnlyMode;
+  /** The read-only mark of the customer's plan record now, or `null` while the workspace is read-write. It is asked at
+   * every write (creating a room, adding a document, a pack refresh, a write on a room's socket, an MCP write tool,
+   * the assistant's included) and at every `GET /api/me`. While it returns a mark, every write is refused as `readOnly`
+   * refuses it, in the words of `planReadOnlyMode`: the reason on the record and the page to pay on. Once it returns
+   * `null` (the customer paid), writes are served again at once: no restart, and the sockets and MCP sessions stay
+   * open. Give `RoomServer` no `readOnly` with it, since the room service keeps its mode for its life. A mark that is
+   * not one (see `planReadOnlyMode`) fails the write. `readOnly`, when given as well, comes first. */
+  planReadOnly?: () => PlanReadOnly | null;
+  /** The assistant of the workspace. Without it the assistant is not configured: it says so to a client that
+   * asks for its status, refuses a task, and keeps nothing. */
+  assistant?: WorkspaceAssistantOptions | null;
 };
 
 export type WorkspaceServer = {
@@ -77,7 +121,10 @@ export type WorkspaceServer = {
   wsUrl: string;
   /** `http://host:port/mcp` */
   mcpUrl: string;
-  /** Close every connection and MCP session, and stop listening. */
+  /** The assistant. Give its `operatorOf` to the room server, so that the agent which works for a user acts on
+   * that user's seat. */
+  assistant: AssistantService;
+  /** Close every connection and MCP session, end the running assistant tasks, and stop listening. */
   stop(): Promise<void>;
 };
 
@@ -88,6 +135,8 @@ type Connection = {
   roomId: string | null;
   subscription: RoomSubscription | null;
   closed: boolean;
+  /** This connection as the assistant sees it, once it has sent an assistant message. */
+  assistant: AssistantConnection | null;
 };
 
 const ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
@@ -121,13 +170,14 @@ const STATIC_TYPES: Record<string, string> = {
   ".gz": "application/gzip",
 };
 
-/** The HTTP status of each room failure. */
+/** The HTTP status of each room failure, and of an export of a workspace the server holds nothing of. */
 const FAILURE_STATUS: Record<string, number> = {
   BAD_REQUEST: 400,
   UNKNOWN_ROOM: 404,
   UNKNOWN_DOCUMENT: 404,
   UNKNOWN_PROPOSAL: 404,
   UNKNOWN_THREAD: 404,
+  UNKNOWN_WORKSPACE: 404,
   FORBIDDEN: 403,
   PROPOSAL_NOT_OPEN: 409,
   [ROOM_REVISION_MISMATCH]: 409,
@@ -154,7 +204,7 @@ function json(status: number, body: unknown, headers: Record<string, string> = {
 const problem = (status: number, code: string, message: string, extra: Record<string, unknown> = {}, headers: Record<string, string> = {}): Response =>
   json(status, { error: { code, message, ...extra } }, headers);
 
-function failed(error: RoomFailure): Response {
+function failed(error: RoomFailure | ExportRefusal): Response {
   const extra = "detail" in error ? { detail: error.detail } : {};
   return problem(FAILURE_STATUS[error.code] ?? 400, error.code, error.message, extra);
 }
@@ -210,9 +260,23 @@ export function startWorkspaceServer(options: WorkspaceServerOptions): Workspace
   const { service, authenticate } = options;
   const staticDir = options.staticDir ? resolve(options.staticDir) : null;
   const wasmDir = options.wasmDir ? resolve(options.wasmDir) : null;
-  const mcpHandlers = new Map<string, McpHttpHandler>();
+  /** The MCP server of each room that was asked for, and its HTTP transport. */
+  const mcpRooms = new Map<string, { server: McpServer; handler: McpHttpHandler }>();
   // The linked pack is also what `pack_link_refresh` refreshes, into the documents of the agent's room.
   const linkedPacks = options.mcp?.packs ?? (options.pack ? directoryPackRefresher({ dir: options.pack.dir, evaluator: options.pack.evaluator }) : undefined);
+  // Its manifest is what `workspace_list` describes each binding from; not when `mcp.packs` refreshes other packs.
+  const linkedManifests = options.mcp?.packManifests ?? (options.pack && options.mcp?.packs === undefined ? directoryPackManifests(options.pack.dir) : undefined);
+  /** The read-only mode in force now, or `null`: the fixed one, else the one of the plan record's mark now. */
+  const readOnlyNow = (): ReadOnlyMode | null => {
+    if (options.readOnly !== undefined) return options.readOnly;
+    const mark = options.planReadOnly?.() ?? null;
+    return mark === null ? null : planReadOnlyMode(mark);
+  };
+  /** The refusal of every write now, or `null`. */
+  const refusal = (): RoomFailure | null => {
+    const mode = readOnlyNow();
+    return mode === null ? null : readOnlyFailure(mode);
+  };
   /** Pack refreshes write files: one at a time. */
   let packQueue: Promise<unknown> = Promise.resolve();
 
@@ -251,6 +315,8 @@ export function startWorkspaceServer(options: WorkspaceServerOptions): Workspace
       ws.data.roomId = message.room_id;
       return;
     }
+    const refused = refusal();
+    if (refused !== null) return send(ws, errorEvent(requestId, refused));
     const roomId = ws.data.roomId;
     if (roomId === null) return send(ws, badRequest(requestId, "join a room first: send room.join"));
     let result: Result<unknown>;
@@ -288,6 +354,15 @@ export function startWorkspaceServer(options: WorkspaceServerOptions): Workspace
     } catch {
       return send(ws, badRequest(null, "the message is not JSON"));
     }
+    if (isAssistantMessage(message)) {
+      try {
+        await assistant.handle((ws.data.assistant ??= assistantConnection(ws)), message);
+      } catch (e) {
+        console.error("workspace server: an assistant request failed unexpectedly", e);
+        ws.close(1011, "internal error");
+      }
+      return;
+    }
     const problems = validateRoomClientMessage(message);
     if (problems.length > 0) {
       const id = typeof message === "object" && message !== null && "request_id" in message ? message.request_id : null;
@@ -308,7 +383,7 @@ export function startWorkspaceServer(options: WorkspaceServerOptions): Workspace
     const rooms = await service.listRooms();
     if (named !== null) {
       if (!ID.test(named)) return json(400, { jsonrpc: "2.0", id: null, error: { code: -32600, message: `${JSON.stringify(named)} is not a room id` } });
-      if (mcpHandlers.has(named) || rooms.some((r) => r.room_id === named)) return named;
+      if (mcpRooms.has(named) || rooms.some((r) => r.room_id === named)) return named;
       return json(404, { jsonrpc: "2.0", id: null, error: { code: -32600, message: `unknown room ${JSON.stringify(named)}` } });
     }
     if (rooms.length === 1 && rooms[0]) return rooms[0].room_id;
@@ -319,15 +394,50 @@ export function startWorkspaceServer(options: WorkspaceServerOptions): Workspace
     });
   }
 
-  function mcpHandlerFor(roomId: string): McpHttpHandler {
-    let handler = mcpHandlers.get(roomId);
-    if (!handler) {
-      const server = new McpServer({ ...options.mcp, packs: linkedPacks, service, roomId, actor: MCP_PLACEHOLDER });
-      handler = createMcpHttpHandler({ server, authenticate });
-      mcpHandlers.set(roomId, handler);
+  function mcpRoomFor(roomId: string): { server: McpServer; handler: McpHttpHandler } {
+    let room = mcpRooms.get(roomId);
+    if (!room) {
+      const tools = {
+        ...options.mcp,
+        packs: linkedPacks,
+        ...(linkedManifests === undefined ? {} : { packManifests: linkedManifests }),
+        service,
+        roomId,
+      } satisfies WorkspaceToolsOptions;
+      const server = new McpServer({
+        ...tools,
+        // `serverInfo.version` names the build an agent client or a support request talks to.
+        version: workspacePackage.version,
+        actor: MCP_PLACEHOLDER,
+        ...(options.readOnly === undefined ? {} : { readOnly: options.readOnly }),
+      });
+      if (options.readOnly === undefined && options.planReadOnly !== undefined) {
+        // The tools of a server keep the mode they were made with, and a session keeps its server. So each call asks
+        // the plan record, and while it holds a mark the call goes to tools made with that mode: they refuse a write
+        // tool before anything else, as with a fixed mode, and serve every read the same. The sessions, and the
+        // assistant, which calls these tools too, see the change on their next call.
+        const writable = server.tools.call.bind(server.tools);
+        server.tools.call = (agent, call) => {
+          const mode = readOnlyNow();
+          return mode === null ? writable(agent, call) : new WorkspaceTools({ ...tools, readOnly: mode }).call(agent, call);
+        };
+      }
+      room = { server, handler: createMcpHttpHandler({ server, authenticate }) };
+      mcpRooms.set(roomId, room);
     }
-    return handler;
+    return room;
   }
+
+  // The assistant calls the tools of the room's MCP server, as the agent that works for the user who asked: one
+  // implementation of every read and every edit, whoever the agent is.
+  const assistant = new AssistantService({
+    endpoint: null,
+    allowance: null,
+    storePath: ":memory:",
+    ...options.assistant,
+    rooms: service,
+    tools: (roomId, agent, call) => mcpRoomFor(roomId).server.tools.call(agent, call),
+  });
 
   async function mcp(request: Request): Promise<Response> {
     // Authenticate before naming the room: an unknown caller learns nothing about which rooms exist.
@@ -336,7 +446,7 @@ export function startWorkspaceServer(options: WorkspaceServerOptions): Workspace
     }
     const room = await mcpRoomOf(request);
     if (room instanceof Response) return room;
-    return mcpHandlerFor(room).fetch(request);
+    return mcpRoomFor(room).handler.fetch(request);
   }
 
   // --- /api ---------------------------------------------------------------------------------------------
@@ -358,6 +468,8 @@ export function startWorkspaceServer(options: WorkspaceServerOptions): Workspace
   }
 
   async function createRoom(request: Request, actor: RoomActor): Promise<Response> {
+    const refused = refusal();
+    if (refused !== null) return failed(refused);
     const body = await readJson(request);
     if (body instanceof Response) return body;
     const roomId = body.room_id;
@@ -369,6 +481,8 @@ export function startWorkspaceServer(options: WorkspaceServerOptions): Workspace
   }
 
   async function addDocument(request: Request, roomId: string, actor: RoomActor): Promise<Response> {
+    const refused = refusal();
+    if (refused !== null) return failed(refused);
     const url = new URL(request.url);
     let name = url.searchParams.get("name");
     let format: string | null = url.searchParams.get("format");
@@ -449,19 +563,65 @@ export function startWorkspaceServer(options: WorkspaceServerOptions): Workspace
     throw e;
   }
 
-  async function pack(request: Request, action: "check" | "refresh"): Promise<Response> {
+  /** The room `GET /api/pack` checks the pack against: `?room=`, else the default room, else the only room. `null`
+   * while the server has no room, and the pack is checked on disk. */
+  async function packRoomOf(request: Request): Promise<string | null | Response> {
+    const named = new URL(request.url).searchParams.get("room");
+    if (named !== null) return ID.test(named) ? named : problem(400, "BAD_REQUEST", `${JSON.stringify(named)} is not a room id`);
+    if (options.defaultRoom) return options.defaultRoom;
+    const rooms = await service.listRooms();
+    return rooms.length === 1 && rooms[0] ? rooms[0].room_id : null;
+  }
+
+  /** The documents of `roomId` at their heads, as `actor` reads them, and the file of the pack directory for a name
+   * the room does not hold: what `pack_link_refresh` refreshes from and into, so a binding the room's heads already
+   * carry is fresh whatever the files on disk say. */
+  function roomHeads(roomId: string, actor: RoomActor, dir: PackReader): PackReader {
+    return {
+      read: async (name) => {
+        const read = await service.readHead(roomId, actor, name);
+        if (read.ok) return read.value.bytes;
+        if (read.error.code !== "UNKNOWN_DOCUMENT") throw new PackError("room-read-failed", `${name}: ${read.error.code}: ${read.error.message}`);
+        return dir.read(name);
+      },
+    };
+  }
+
+  async function pack(request: Request, action: "check" | "refresh", actor: RoomActor): Promise<Response> {
+    if (action === "refresh" && request.method === "POST") {
+      const refused = refusal();
+      if (refused !== null) return failed(refused);
+    }
     const linked = options.pack;
     if (!linked) return problem(404, "NO_PACK", "no pack is linked: start the server with --pack <dir>");
     if (action === "refresh" && request.method !== "POST") return problem(405, "BAD_REQUEST", "refresh the pack with POST", {}, { allow: "POST" });
     if (action === "check" && request.method !== "GET") return problem(405, "BAD_REQUEST", "read the pack with GET", {}, { allow: "GET" });
+    let roomId: string | null = null;
+    if (action === "check") {
+      const room = await packRoomOf(request);
+      if (room instanceof Response) return room;
+      if (room !== null) {
+        // Who cannot read the room learns nothing of its documents.
+        const state = await service.getRoom(room, actor);
+        if (!state.ok) return failed(state.error);
+      }
+      roomId = room;
+    }
     const store = new DirectoryStore(linked.dir);
     const name = basename(resolve(linked.dir));
+    const evaluator = { evaluator: linked.evaluator };
     const run = async (): Promise<Response> => {
       try {
-        if (action === "check") return json(200, { dir: name, report: await checkPack(store, { evaluator: linked.evaluator }) });
+        if (action === "check" && roomId === null) return json(200, { dir: name, room: null, report: await checkPack(store, evaluator) });
+        if (action === "check" && roomId !== null) {
+          // The manifest is the pack directory's; every source and target the room holds is read at its head.
+          const heads = roomHeads(roomId, actor, store);
+          return json(200, { dir: name, room: roomId, report: (await planPack(await loadPack(store), heads, heads, evaluator)).report });
+        }
         const report = await refreshPack(store, { evaluator: linked.evaluator, engine: linked.engine });
         return json(200, {
           dir: name,
+          room: null,
           report: {
             pack_id: report.pack_id,
             fresh: report.fresh,
@@ -479,6 +639,18 @@ export function startWorkspaceServer(options: WorkspaceServerOptions): Workspace
     return next;
   }
 
+  /** `GET /api/export[?workspace=<id>]`: every document of every room of one workspace, at its head, as one ZIP archive
+   * that is streamed, one document in memory at a time (see `export.ts`). Whoever can read every room of the workspace
+   * can export it, a user or an agent, read-only mode included (it writes nothing). What can refuse an export is known
+   * before the first byte, so a refusal is an ordinary error response. */
+  async function exportArchive(request: Request, actor: RoomActor): Promise<Response> {
+    if (request.method !== "GET") return problem(405, "BAD_REQUEST", "read the export with GET", {}, { allow: "GET" });
+    const named = new URL(request.url).searchParams.get("workspace");
+    if (named !== null && !ID.test(named)) return problem(400, "BAD_REQUEST", `${JSON.stringify(named)} is not a workspace id`);
+    const planned = await planExport(service, actor, { named, configured: options.workspaceId || null });
+    return planned.ok ? exportResponse(planned.value) : failed(planned.error);
+  }
+
   async function api(request: Request, path: string): Promise<Response> {
     if (path === "/api/health") return json(200, { ok: true });
     const actor = await authenticate(request);
@@ -492,9 +664,13 @@ export function startWorkspaceServer(options: WorkspaceServerOptions): Workspace
       }
     });
     const [head, roomId, kind, item, leaf] = parts;
-    if (head === "me" && parts.length === 1 && method === "GET") return json(200, { actor });
-    if (head === "pack" && parts.length === 1) return pack(request, "check");
-    if (head === "pack" && parts.length === 2 && roomId === "refresh") return pack(request, "refresh");
+    if (head === "me" && parts.length === 1 && method === "GET") {
+      const readOnly = readOnlyNow();
+      return json(200, readOnly === null ? { actor } : { actor, readOnly });
+    }
+    if (head === "export" && parts.length === 1) return exportArchive(request, actor);
+    if (head === "pack" && parts.length === 1) return pack(request, "check", actor);
+    if (head === "pack" && parts.length === 2 && roomId === "refresh") return pack(request, "refresh", actor);
     if (head !== "rooms") return problem(404, "NOT_FOUND", `no route ${method} ${path}`);
     if (parts.length === 1) {
       if (method === "GET") return json(200, { rooms: await service.listRooms() });
@@ -563,7 +739,7 @@ export function startWorkspaceServer(options: WorkspaceServerOptions): Workspace
       if (path === "/ws") {
         const actor = await authenticate(request);
         if (actor === null) return new Response("unauthorized", { status: 401 });
-        const data: Connection = { actor, queue: Promise.resolve(), roomId: null, subscription: null, closed: false };
+        const data: Connection = { actor, queue: Promise.resolve(), roomId: null, subscription: null, closed: false, assistant: null };
         if (upgrade.upgrade(request, { data })) return undefined;
         return new Response("expected a WebSocket upgrade", { status: 426 });
       }
@@ -593,10 +769,13 @@ export function startWorkspaceServer(options: WorkspaceServerOptions): Workspace
     url: `http://${host}:${port}`,
     wsUrl: `ws://${host}:${port}/ws`,
     mcpUrl: `http://${host}:${port}/mcp`,
+    assistant,
     async stop() {
-      for (const handler of mcpHandlers.values()) handler.close();
-      mcpHandlers.clear();
+      for (const { handler } of mcpRooms.values()) handler.close();
+      mcpRooms.clear();
       await server.stop(true);
+      // After the sockets: a task that is cancelled here stores its turn and has nobody left to tell.
+      await assistant.close();
     },
   };
 }

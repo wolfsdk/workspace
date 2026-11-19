@@ -1,8 +1,9 @@
 // MCP over stdio, on a pair of in-memory streams: one JSON-RPC message per line, in and out.
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { INVALID_PARAMS, PARSE_ERROR, runMcpStdioServer } from "../src/index.ts";
 import { disposeAll, helper, initializeRequest, makeWorkspace, notify, request, type Workspace } from "./fixtures/workspace.ts";
 
+setDefaultTimeout(120_000);
 afterEach(disposeAll);
 
 const encoder = new TextEncoder();

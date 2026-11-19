@@ -95,7 +95,20 @@ export function validateMcpToolCall(call: unknown): string[] {
   if (out.length || !tool || !isObject(call)) return out;
 
   const args = call.arguments;
-  out.push(...validateSchema(tool.inputSchema, args).map((p) => p.replace(/^\$/, "$.arguments")));
+  const problems = validateSchema(tool.inputSchema, args);
+  if (isObject(args) && tool.inputSchema.additionalProperties === false) {
+    for (const name of Object.keys(args)) {
+      if (Object.hasOwn(tool.inputSchema.properties ?? {}, name)) continue;
+      const problem = `$: unexpected ${name}`;
+      if (!problems.includes(problem)) problems.push(problem);
+    }
+  }
+  out.push(...problems.map((problem) => {
+    const path = problem.replace(/^\$/, "$.arguments");
+    return problem.startsWith("$: unexpected ")
+      ? `${path}. Defined arguments for ${tool.name}: ${Object.keys(tool.inputSchema.properties ?? {}).join(", ")}.`
+      : path;
+  }));
   minItems(tool.inputSchema, args, "$.arguments", out);
   if (out.length || !isObject(args)) return out;
 

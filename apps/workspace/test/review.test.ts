@@ -1,4 +1,6 @@
 import { describe, expect, test } from "bun:test";
+import type { DocState } from "@wolfsdk/protocol/contract";
+import * as model from "@wolfsdk/protocol/session";
 import type { RoomServerEvent } from "@wolfsdk/protocol/workspace";
 import { batchFromSession, isActivityFor, isDecided, isOwnCommit, isOwnNewProposal, outcomeOf, reviewInputOf } from "../src/lib/review.ts";
 import { ALICE, batch, entry, head, proposal, SCOUT } from "./fixtures.ts";
@@ -87,5 +89,67 @@ describe("event matchers", () => {
     expect(isActivityFor({ type: "agent.activity", seq: 1, agent, doc_name: null, activity: "searching", at }, "memo.docx")).toBe(true);
     expect(isActivityFor({ type: "agent.activity", seq: 1, agent, doc_name: "model.xlsx", activity: "reading", at }, "memo.docx")).toBe(false);
     expect(isActivityFor(committed, "memo.docx")).toBe(false);
+  });
+});
+
+describe("a deck proposal's table cell edit", () => {
+  // As the engine views a slide holding a 2 x 2 table (the walkthrough deck's has 5 x 5): regions for the
+  // slide and the table shape only, none per cell. The edit's diff names the cell, its paragraph and its run.
+  const table = "slide:#257/shape:#3";
+  const cell = `${table}/row:@2/cell:@2`;
+  const node = (id: string, kind: string, parent: string | null, extra: object = {}) => ({ id, kind, parent, visible: true, ...extra });
+  const nodes = [
+    node("slide:#257", "slide", null),
+    node(table, "shape", "slide:#257", { geometry: { x: 548640, y: 1005840, cx: 8046720, cy: 2286000 } }),
+    node(`${table}/col:@1`, "col", table, { value: { number: 4023360 } }),
+    node(`${table}/col:@2`, "col", table, { value: { number: 4023360 } }),
+    node(`${table}/row:@1`, "row", table, { value: { number: 1143000 } }),
+    node(`${table}/row:@1/cell:@1`, "cell", `${table}/row:@1`),
+    node(`${table}/row:@1/cell:@2`, "cell", `${table}/row:@1`),
+    node(`${table}/row:@2`, "row", table, { value: { number: 1143000 } }),
+    node(`${table}/row:@2/cell:@1`, "cell", `${table}/row:@2`),
+    node(cell, "cell", `${table}/row:@2`),
+  ];
+  const childIds: Record<string, string[]> = {};
+  for (const n of nodes) (childIds[n.parent ?? ""] ??= []).push(n.id);
+  const px = 1500 / 720;
+  const region = (object_id: string, bbox_pt: [number, number, number, number]) => ({
+    object_id,
+    page: 3,
+    bbox_pt,
+    bbox_px: bbox_pt.map((v) => v * px) as [number, number, number, number],
+  });
+  const state = {
+    doc: "d1",
+    name: "walkthrough.pptx",
+    format: "pptx",
+    revision: 1,
+    sha256: "after",
+    nodes,
+    childIds,
+    regions: [region("slide:#257", [0, 0, 720, 540]), region(table, [43.2, 79.2, 633.6, 180])],
+  } as unknown as DocState;
+  const modified = (address: string, kind: string) => ({ address, change: "modified" as const, kind, parts: ["ppt/slides/slide3.xml"], property: "text" });
+  const edit = {
+    revision: 1,
+    label: "Proposed change 1",
+    source: "proposal",
+    ops: [],
+    diff: [modified(cell, "cell"), modified(`${cell}/para:@1`, "paragraph"), modified(`${cell}/para:@1/run:@1`, "run")],
+    transaction: {},
+    baseSha256: "before",
+    resultSha256: "after",
+    appliedAt: 0,
+  } as unknown as model.HistoryEntry;
+
+  test("outlines the changed cell, as a changed Word table cell is", () => {
+    expect(model.outlined(edit, 0, state)).toBe(true);
+  });
+
+  test("draws the cell's outline in the cell's box on the slide, tagged modified", () => {
+    const boxes = model.boxesOnPage(edit, "after", [...state.regions, ...model.tableCellRegions(state)]);
+    expect(boxes.map((b) => [b.address, b.change.change, b.region.page, b.region.bbox_pt])).toEqual([
+      [cell, "modified", 3, [43.2 + 316.8, 79.2 + 90, 316.8, 90]],
+    ]);
   });
 });

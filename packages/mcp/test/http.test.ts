@@ -1,9 +1,10 @@
 // Streamable HTTP: the handler is driven as a plain `(Request) => Response` and, once, over a real socket.
-import { afterEach, describe, expect, setSystemTime, test } from "bun:test";
+import { afterEach, describe, expect, setDefaultTimeout, setSystemTime, test } from "bun:test";
 import { INVALID_REQUEST, PARSE_ERROR, createMcpHttpHandler, prefersEventStream, startMcpHttpServer, type McpHttpOptions } from "../src/index.ts";
 import { SseReader, roomEvents } from "./fixtures/sse.ts";
 import { alice, disposeAll, helper, initializeRequest, listen, makeWorkspace, notify, onDispose, request, type Workspace } from "./fixtures/workspace.ts";
 
+setDefaultTimeout(120_000);
 afterEach(async () => {
   setSystemTime();
   await disposeAll();

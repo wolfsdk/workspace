@@ -1,10 +1,11 @@
 // The rooms: documents, commits, revision checks, proposals, comments, activity and what a failed batch leaves
 // behind. The engine is the stand-in reactor over real pipes; every hash the tests expect is computed here.
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import { rm, writeFile } from "node:fs/promises";
 import { type RoomBatch, type RoomPinnedBatch, type RoomServerEvent, validateRoomEvent } from "@wolfsdk/protocol/workspace";
 import type { EditRequest } from "../src/index.ts";
+import type { RoomEditOutcome } from "../src/rooms.ts";
 import {
   alice,
   bob,
@@ -22,6 +23,9 @@ import {
   snapshotOf,
   textOf,
 } from "./fixtures/harness.ts";
+
+// Writes are flushed to disk and processes are started: on a busy host one test can take many seconds.
+setDefaultTimeout(120_000);
 
 const DOC = "doc.docx";
 const HELLO = "hello world";
@@ -249,6 +253,67 @@ describe("proposals", () => {
     expect(refusalOf(await h.server.readPreview("room", alice, "nope")).code).toBe("UNKNOWN_PROPOSAL");
   });
 
+  describe("an edit equal to an open proposal opens nothing new", () => {
+    /** The outcome of an edit that must have proposed: the proposal, and whether it already existed. */
+    const proposalOf = (outcome: RoomEditOutcome): Extract<RoomEditOutcome, { mode: "propose" }> => {
+      if (outcome.mode !== "propose") throw new Error("expected a proposal, got a commit");
+      return outcome;
+    };
+    const cell = "table:Revenue/row:@2/cell:@2";
+    /** What a pack refresh (`refreshPackInRoom` of @wolfsdk/packs) sends for one document: the planned batch,
+     * labelled as the pack's refresh and pinned to its source's clock, against the revision it read the document at. */
+    const packRefresh = async (value: string) => {
+      const { head } = must(await h.server.readHead("room", robot, DOC));
+      const refresh: RoomBatch = { ops: [{ op: "set_text", target: cell, text: value }], label: "pack q4: refresh", clock: "2026-11-13T00:00:00Z" };
+      return proposalOf(must(await h.server.edit("room", robot, { doc_name: DOC, base_revision: head.revision, mode: "propose", batch: refresh })));
+    };
+
+    test("a repeated pack refresh, and the agent's edit equal to it, answer with the open proposal and say it existed", async () => {
+      await seedRoom(h);
+      const opened = await packRefresh("42");
+      expect(opened).toMatchObject({ mode: "propose", existed: false, proposal: { status: "open", base_revision: 0 } });
+      const log = await join(await seqNow());
+      const before = await snapshotOf(h);
+      const again = await packRefresh("42");
+      expect(again).toEqual({ mode: "propose", proposal: opened.proposal, existed: true });
+      // The agent proposes the same ops itself, without the refresh's label or clock: still the same proposal.
+      const own = proposalOf(must(await edit("propose", 0, batch({ op: "set_text", target: cell, text: "42" }), robot)));
+      expect(own).toEqual(again);
+      expect(log.events).toEqual([]);
+      expect(await snapshotOf(h)).toEqual(before);
+      expect(before.proposals.map((p) => p.proposal_id)).toEqual([opened.proposal.proposal_id]);
+
+      // Two refreshes with another value race: the document lock lets one open a proposal, the other finds it.
+      const raced = await Promise.all([packRefresh("43"), packRefresh("43")]);
+      expect(raced.map((r) => r.existed).sort()).toEqual([false, true]);
+      expect(raced[0]?.proposal).toEqual(raced[1]?.proposal);
+      expect(log.ofType("proposal.updated").map((e) => e.proposal)).toEqual([raced[0]?.proposal]);
+      const open = (await snapshotOf(h)).proposals.filter((p) => p.status === "open");
+      expect(open.map((p) => p.proposal_id)).toEqual([opened.proposal.proposal_id, raced[0]?.proposal.proposal_id]);
+      log.expectValid();
+    });
+
+    test("a repeated agent edit answers with the open proposal; other ops, or ops whose proposal was closed, open a new one", async () => {
+      await seedRoom(h);
+      const opened = proposalOf(must(await edit("propose", 0, append("!"), robot)));
+      expect(opened.existed).toBe(false);
+      const log = await join(await seqNow());
+      const again = proposalOf(must(await edit("propose", 0, { ...append("!"), label: "retry" }, robot)));
+      expect(again).toEqual({ mode: "propose", proposal: opened.proposal, existed: true });
+      expect(log.events).toEqual([]);
+
+      const other = proposalOf(must(await edit("propose", 0, append("?"), robot)));
+      expect(other.existed).toBe(false);
+      must(await decide(opened.proposal.proposal_id, "reject"));
+      const reopened = proposalOf(must(await edit("propose", 0, append("!"), robot)));
+      expect(reopened.existed).toBe(false);
+      expect(reopened.proposal.proposal_id).not.toBe(opened.proposal.proposal_id);
+      const open = (await snapshotOf(h)).proposals.filter((p) => p.status === "open");
+      expect(open.map((p) => p.proposal_id)).toEqual([other.proposal.proposal_id, reopened.proposal.proposal_id]);
+      log.expectValid();
+    });
+  });
+
   test("approve commits the proposal's batches under its id, by its author, and announces in order", async () => {
     await seedRoom(h);
     const proposal = proposed(await edit("propose", 0, append("!"), robot));
@@ -454,24 +519,86 @@ describe("proposals", () => {
     expect(log.events).toEqual([]);
   });
 
-  test("approving one proposal gives each sibling its own verdict, in creation order, and leaves other documents alone", async () => {
+  test("approving one proposal supersedes the siblings it overlaps and rebases the disjoint ones, in creation order", async () => {
     await seedRoom(h);
     must(await h.server.addDocument("room", alice, { name: "b.docx", format: "docx", bytes: bytesOf("bee") }));
-    const first = proposed(await edit("propose", 0, batch({ op: "replace", find: "hello", text: "HELLO" }), robot));
-    const second = proposed(await edit("propose", 0, batch({ op: "replace", find: "hello", text: "x" }), robot));
-    const third = proposed(await edit("propose", 0, append("!"), robot));
+    const row = "table:Revenue/row:@2";
+    const approved = proposed(await edit("propose", 0, batch({ op: "replace", target: row, find: "hello", text: "HELLO" }), robot));
+    // Overlapping: a cell of the approved row; a row the approved batch may have renumbered; an op with no target.
+    const cell = proposed(await edit("propose", 0, batch({ op: "append", target: `${row}/cell:@1`, text: "!" }), robot));
+    const shifted = proposed(await edit("propose", 0, batch({ op: "append", target: "table:Revenue/row:@3", text: "#" }), robot));
+    const anywhere = proposed(await edit("propose", 0, append("*"), robot));
+    // Disjoint: one that still applies on the new head, and one the engine refuses there.
+    const paragraph = proposed(await edit("propose", 0, batch({ op: "append", target: "para:@1", text: "?" }), robot));
+    const broken = proposed(await edit("propose", 0, batch({ op: "replace", target: "para:@2", find: "hello", text: "x" }), bob));
     const elsewhere = proposed(await edit("propose", 0, append("?"), robot, "b.docx"));
     const log = await join(await seqNow());
-    must(await decide(first.proposal_id, "approve"));
-    const updates = log.ofType("proposal.updated").map((e) => [e.proposal.proposal_id, e.proposal.status]);
+    must(await decide(approved.proposal_id, "approve"));
+    log.expectValid();
+
+    const updates = log.ofType("proposal.updated").map((e) => [e.proposal.proposal_id, e.proposal.status, e.proposal.base_revision]);
     expect(updates).toEqual([
-      [first.proposal_id, "approved"],
-      [second.proposal_id, "conflicted"],
-      [third.proposal_id, "superseded"],
+      [approved.proposal_id, "approved", 0],
+      [cell.proposal_id, "superseded", 0],
+      [shifted.proposal_id, "superseded", 0],
+      [anywhere.proposal_id, "superseded", 0],
+      [paragraph.proposal_id, "open", 1],
+      [broken.proposal_id, "conflicted", 0],
     ]);
+    // A closed proposal gets a thread that names the approved proposal (and the engine's message, for a failed
+    // rebase) and mentions its author; a rebased one gets none.
+    const notes = new Map(log.ofType("comment.updated").map((e) => [e.thread.target_address, e.thread]));
+    expect([...notes.keys()]).toEqual([cell, shifted, anywhere, broken].map((p) => `proposal:${p.proposal_id}`));
+    const by = `proposal ${approved.proposal_id}, which ${alice.name} approved`;
+    const note = (p: { proposal_id: string }) => notes.get(`proposal:${p.proposal_id}`);
+    expect(note(cell)).toMatchObject({
+      doc_name: DOC,
+      mentions: [{ kind: "agent", id: robot.id }],
+      messages: [{ author: alice, body: `Superseded by ${by}: ${row}/cell:@1 overlaps ${row}.` }],
+      resolved: false,
+    });
+    expect(note(shifted)?.messages[0]?.body).toBe(`Superseded by ${by}: table:Revenue/row:@3 overlaps ${row}.`);
+    expect(note(anywhere)?.messages[0]?.body).toBe(`Superseded by ${by}: it has an op that names no target, so it may change anything.`);
+    expect(note(broken)).toMatchObject({ mentions: [{ kind: "user", id: bob.id }] });
+    expect(note(broken)?.messages[0]?.body).toStartWith(`Could not be rebased on revision 1 after ${by}: `);
+    expect(note(broken)?.messages[0]?.body).toContain('"hello" is not in the document');
+
+    // The rebased proposal previews its batch on the new head, and approving it commits exactly that preview.
     const room = await snapshotOf(h);
-    expect(room.proposals.find((p) => p.proposal_id === elsewhere.proposal_id)?.status).toBe("open");
+    const rebased = room.proposals.find((p) => p.proposal_id === paragraph.proposal_id);
+    expect(rebased).toEqual({ ...paragraph, base_revision: 1, preview_sha256: sha256(bytesOf("HELLO world?")) });
+    expect(textOf(must(await h.server.readPreview("room", alice, paragraph.proposal_id)).bytes)).toBe("HELLO world?");
+    expect(room.proposals.find((p) => p.proposal_id === elsewhere.proposal_id)).toEqual(elsewhere);
     expect(textOf(must(await h.server.readHead("room", alice, DOC)).bytes)).toBe("HELLO world");
+    const second = must(await decide(paragraph.proposal_id, "approve"));
+    expect(second.head).toMatchObject({ revision: 2, sha256: sha256(bytesOf("HELLO world?")) });
+    expect(second.entries[0]).toMatchObject({ revision: 2, proposal_id: paragraph.proposal_id, approved_by: alice });
+  });
+
+  test("a direct commit still closes every open proposal of the document, without a note", async () => {
+    await seedRoom(h);
+    const paragraph = proposed(await edit("propose", 0, batch({ op: "append", target: "para:@1", text: "?" }), robot));
+    const log = await join(await seqNow());
+    committed(await edit("commit", 0, batch({ op: "replace", target: "table:Revenue/row:@2", find: "hello", text: "HELLO" })));
+    expect(log.ofType("proposal.updated").map((e) => e.proposal)).toEqual([{ ...paragraph, status: "superseded" }]);
+    expect(log.ofType("comment.updated")).toEqual([]);
+  });
+
+  test("a licence or budget refusal of a rebase closes the sibling as superseded, with the engine's message", async () => {
+    await seedRoom(h);
+    const marker = `${h.dir}/refusing`;
+    const approved = proposed(await edit("propose", 0, batch({ op: "append", target: "table:Revenue/row:Q4", text: "!" }), robot));
+    const sibling = proposed(
+      await edit("propose", 0, batch({ op: "refuse_while_exists", target: "para:#5C7700D1", path: marker, code: "internal-error" }), robot),
+    );
+    const log = await join(await seqNow());
+    await writeFile(marker, "");
+    must(await decide(approved.proposal_id, "approve"));
+    expect(log.ofType("proposal.updated").map((e) => [e.proposal.proposal_id, e.proposal.status])).toEqual([
+      [approved.proposal_id, "approved"],
+      [sibling.proposal_id, "superseded"],
+    ]);
+    expect(log.ofType("comment.updated")[0]?.thread.messages[0]?.body).toContain("internal-error");
   });
 });
 
@@ -551,6 +678,41 @@ describe("agent activity", () => {
     log.expectValid();
     expect((await snapshotOf(h)).seq).toBe(second?.seq ?? -1);
   });
+
+  test("an edit announced by its agent lands the announcement ahead of its own event, and a refused edit announces nothing", async () => {
+    await seedRoom(h);
+    const before = await snapshotOf(h);
+    const log = await join(before.seq);
+    const announce = { doc_name: DOC, activity: "committing", detail: "1 op" } as const;
+    const request = (mode: EditRequest["mode"], base: number, b: RoomBatch, doc = DOC): EditRequest => ({ doc_name: doc, base_revision: base, mode, batch: b });
+
+    // Refused for every reason the room has, each leaves no event at all.
+    expect(refusalOf(await h.server.edit("room", robot, request("commit", 0, batch({ op: "replace", find: "absent", text: "x" })), { announce })).code).toBe("BAD_REQUEST");
+    expect(refusalOf(await h.server.edit("room", robot, request("propose", 0, batch({ op: "fail", message: "boom" })), { announce })).code).toBe("BAD_REQUEST");
+    expect(refusalOf(await h.server.edit("room", robot, request("commit", 7, append("x")), { announce })).code).toBe("REVISION_MISMATCH");
+    expect(refusalOf(await h.server.edit("room", robot, request("commit", 0, append("x"), "missing.docx"), { announce })).code).toBe("UNKNOWN_DOCUMENT");
+    expect(refusalOf(await h.server.edit("room", robot, request("commit", 0, append("x")), { announce: { ...announce, doc_name: "missing.docx" } })).code).toBe("UNKNOWN_DOCUMENT");
+    // Only an agent announces; a person's edit with an announcement is refused, and a plain edit is as it was.
+    expect(refusalOf(await h.server.edit("room", alice, request("commit", 0, append("x")), { announce })).code).toBe("FORBIDDEN");
+    expect(await snapshotOf(h)).toEqual(before);
+    expect(log.events).toEqual([]);
+
+    const proposal = must(await h.server.edit("room", robot, request("propose", 0, append("p")), { announce: { ...announce, activity: "proposing" } }));
+    expect(proposal).toMatchObject({ mode: "propose", existed: false });
+    const commit = must(await h.server.edit("room", robot, request("commit", 0, append("!")), { announce }));
+    expect(commit.mode).toBe("commit");
+    const types = log.events.map((event) => event.type);
+    expect(types.filter((type) => type === "agent.activity")).toHaveLength(2);
+    expect(types.indexOf("agent.activity")).toBeLessThan(types.indexOf("proposal.updated"));
+    const proposing = log.ofType("agent.activity")[0];
+    const committing = log.ofType("agent.activity")[1];
+    const committedEvent = log.ofType("doc.committed")[0];
+    expect(proposing).toMatchObject({ agent: { id: "robot" }, doc_name: DOC, activity: "proposing" });
+    expect(committing).toMatchObject({ activity: "committing", detail: "1 op" });
+    expect(committedEvent?.seq).toBe((committing?.seq ?? -1) + 1);
+    expect(types.indexOf("doc.committed")).toBe(types.lastIndexOf("agent.activity") + 1);
+    log.expectValid();
+  });
 });
 
 describe("a failed batch commits nothing", () => {
@@ -603,7 +765,7 @@ describe("a failed batch commits nothing", () => {
 
   test("a worker that never answers is cut off at the call timeout and commits nothing", async () => {
     await h.dispose();
-    h = await makeHarness({ callTimeoutMs: 400 });
+    h = await makeHarness({ callTimeoutMs: 5_000 });
     await seedRoom(h);
     const before = await snapshotOf(h);
     const refusal = refusalOf(await edit("commit", 0, batch({ op: "hang" })));

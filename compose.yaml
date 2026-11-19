@@ -11,6 +11,13 @@
 # Without WOLF_LICENSE_KEY the engine runs under the Community Self-Host grant (1 workspace, up to 5 seats).
 # Set WOLF_WORKSPACE_BIND=0.0.0.0 only behind TLS: tokens travel in the clear on plain HTTP.
 # To build the image from this checkout instead of pulling it: docker compose up -d --build
+#
+# The assistant comes from the environment of the host that runs `docker compose up`: WOLFSDK_ASSISTANT_URL (the
+# chat-completions endpoint) and WOLFSDK_ASSISTANT_MODEL turn it on, WOLFSDK_ASSISTANT_ALLOWANCE sets the tasks
+# per seat per month, and WOLFSDK_ASSISTANT_API_KEY is the key of the endpoint. Each one that is set becomes the
+# serve flag of the same name; with none set the workspace starts without an assistant, as before. The key is
+# passed by name only, so its value is in neither this file nor the image, and serve reads it from its
+# environment and never prints it. The assistant keeps its turns in the data volume, beside the rooms.
 services:
   workspace:
     image: ghcr.io/wolfsdk/workspace:0.1.0-2
@@ -23,6 +30,23 @@ services:
       WOLF_LICENSE_KEY: "${WOLF_LICENSE_KEY:-}"
       # The licence the engine installer names on the first start.
       WOLF_INSTALL_TERMS: community-selfhost
+      # No value here: each is taken from the host when it is set there, and left out of the container when not.
+      WOLFSDK_ASSISTANT_API_KEY:
+      WOLFSDK_ASSISTANT_URL:
+      WOLFSDK_ASSISTANT_MODEL:
+      WOLFSDK_ASSISTANT_ALLOWANCE:
+    # The entrypoint of the image, given the assistant flags whose variables are set inside the container ($$ is
+    # a $ that the container's shell expands, not compose). Arguments of `command:` still go on to serve.
+    entrypoint:
+      - /bin/sh
+      - -c
+      - >-
+        exec docker-entrypoint.sh
+        $${WOLFSDK_ASSISTANT_URL:+--assistant-url "$$WOLFSDK_ASSISTANT_URL"}
+        $${WOLFSDK_ASSISTANT_MODEL:+--assistant-model "$$WOLFSDK_ASSISTANT_MODEL"}
+        $${WOLFSDK_ASSISTANT_ALLOWANCE:+--assistant-allowance "$$WOLFSDK_ASSISTANT_ALLOWANCE"}
+        "$$@"
+      - docker-entrypoint.sh
     volumes:
       - workspace-data:/data
     restart: unless-stopped

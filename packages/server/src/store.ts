@@ -2,6 +2,11 @@
 // synchronous: a caller groups them in `transaction` and the group is stored whole or not at all. The store
 // knows the shape of the data and nothing about its rules; `RoomServer` owns the rules and validates what it
 // builds with the protocol validators.
+//
+// History is kept as keyframes plus the edit log. A keyframe is a revision whose full bytes history keeps; a
+// revision between two keyframes is rebuilt by replaying the session log's pinned batches on the keyframe at or
+// below it (`reconstructRevision`). Which blobs may then go is for retention to decide; the keyframes and the
+// heads are what it must keep.
 import { Database } from "bun:sqlite";
 import { readFileSync, statSync } from "node:fs";
 import type {
@@ -16,8 +21,27 @@ import type {
   WorkspaceDocFormat,
 } from "@wolfsdk/protocol/workspace";
 import { ROOM_CONTRACT } from "@wolfsdk/protocol/workspace";
+import type { BlobStore } from "./blobs.ts";
+import type { DocumentEngine } from "./engine.ts";
+import { sha256Hex } from "./hash.ts";
 
-const SCHEMA_VERSION = "2";
+/** The schema version this server reads and writes; a backup of another version is refused by restore. The
+ * `keyframes` table did not change it: a database without one gets it, filled from its session log, when a store
+ * opens it, and a server that does not know the table leaves it alone. */
+export const SCHEMA_VERSION = "2";
+
+/**
+ * How many revisions apart history keeps a full copy of a document: revision 0, and from then on the first head at
+ * least this many revisions past the keyframe before it (with one batch a commit, every Nth revision). Every
+ * revision in between is rebuilt by replaying at most N - 1 batches, plus the other batches of the commit that
+ * landed the next keyframe. N is set by replay time measured through `wolf reactor-serve` on the recorded sessions
+ * and on long edit chains of the fixtures, on a loaded host: the largest N whose slowest replay of N - 1 batches,
+ * predicted from a line through the slowest repetition at each length, stays within 250 ms for every history in
+ * every recorded run. That is a quarter of a one-second budget for opening an old revision; the rest is headroom for
+ * documents larger than the fixtures and for slower hosts. DOCX, the slowest format per batch, sets it. The
+ * scenario, the host load and the numbers are in `evidence/ltg-ws-cloud-history-keyframes-20261113.measure.json`.
+ */
+export const HISTORY_KEYFRAME_INTERVAL = 34;
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL) WITHOUT ROWID;
@@ -55,6 +79,16 @@ CREATE TABLE IF NOT EXISTS session_log (
   committed_at TEXT NOT NULL,
   PRIMARY KEY (room_id, seq),
   UNIQUE (room_id, doc_name, revision)
+) WITHOUT ROWID;
+
+-- The revisions of a document whose full bytes history keeps, and the blob that holds them. Only a head is ever
+-- named: its bytes were stored before the commit that made it the head.
+CREATE TABLE IF NOT EXISTS keyframes (
+  room_id TEXT NOT NULL REFERENCES rooms(room_id),
+  doc_name TEXT NOT NULL,
+  revision INTEGER NOT NULL,
+  sha256 TEXT NOT NULL,
+  PRIMARY KEY (room_id, doc_name, revision)
 ) WITHOUT ROWID;
 
 CREATE TABLE IF NOT EXISTS proposals (
@@ -96,6 +130,13 @@ CREATE TABLE IF NOT EXISTS seats (
 export type RoomRow = { room_id: string; workspace_id: string; seq: number };
 export type SeatRow = { kind: RoomActor["kind"]; id: string; name: string; first_seen_at: string };
 export type StoredEvent = { seq: number; event: RoomServerEvent };
+/** A revision of a document whose full bytes history keeps, in the blob `sha256`. */
+export type Keyframe = { revision: number; sha256: string };
+
+export type RoomStoreOptions = {
+  /** How many revisions apart keyframes are recorded. Default `HISTORY_KEYFRAME_INTERVAL`. */
+  keyframeInterval?: number;
+};
 
 type DocumentRow = {
   name: string;
@@ -118,6 +159,8 @@ type EntryRow = {
   approved_by: string | null;
   committed_at: string;
 };
+
+const ENTRY_COLUMNS = "seq, doc_name, revision, base_sha256, result_sha256, author, batch, proposal_id, approved_by, committed_at";
 
 function documentOf(row: DocumentRow): RoomDocument {
   const head: RoomHead = { revision: row.revision, sha256: row.sha256, format: row.format, name: row.name, updated_at: row.updated_at };
@@ -225,8 +268,12 @@ export function isRoomDatabase(dbPath: string): boolean {
 
 export class RoomStore {
   private readonly db: Database;
+  private readonly keyframeInterval: number;
 
-  constructor(dbPath: string) {
+  constructor(dbPath: string, options: RoomStoreOptions = {}) {
+    const interval = options.keyframeInterval ?? HISTORY_KEYFRAME_INTERVAL;
+    if (!Number.isSafeInteger(interval) || interval < 1) throw new RangeError(`keyframeInterval must be a positive integer, not ${interval}`);
+    this.keyframeInterval = interval;
     this.db = new Database(dbPath, { create: true, strict: true });
     // A commit that returned survives power loss. The bytes a head or a proposal names are put (and synced) in
     // the blob store before the row that names them is committed here, so the database never names bytes the
@@ -240,6 +287,7 @@ export class RoomStore {
     } else if (version.value !== SCHEMA_VERSION) {
       throw new Error(`room database has schema version ${version.value}; this server reads ${SCHEMA_VERSION}`);
     }
+    this.backfillKeyframes();
   }
 
   close(): void {
@@ -298,28 +346,92 @@ export class RoomStore {
       .map(documentOf);
   }
 
+  /** Add a document. Its first head is its first keyframe. */
   insertDocument(roomId: string, document: RoomDocument): void {
     const { head, page_hashes } = document;
     const ord = this.db.query<{ n: number }, [string]>("SELECT COALESCE(MAX(ord), -1) + 1 AS n FROM documents WHERE room_id = ?").get(roomId)?.n ?? 0;
     this.db
       .query("INSERT INTO documents (room_id, name, ord, revision, sha256, format, updated_at, page_hashes) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
       .run(roomId, head.name, ord, head.revision, head.sha256, head.format, head.updated_at, page_hashes ? JSON.stringify(page_hashes) : null);
+    this.insertKeyframe(roomId, head.name, { revision: head.revision, sha256: head.sha256 });
   }
 
-  /** Move a document's head. `pageHashes` `null` forgets the page hashes (the engine had none to give). */
+  /** Move a document's head. `pageHashes` `null` forgets the page hashes (the engine had none to give). The new head
+   * becomes a keyframe when it is at least `keyframeInterval` revisions past the document's last one. */
   setHead(roomId: string, head: RoomHead, pageHashes: string[] | null): void {
     this.db
       .query("UPDATE documents SET revision = ?, sha256 = ?, updated_at = ?, page_hashes = ? WHERE room_id = ? AND name = ?")
       .run(head.revision, head.sha256, head.updated_at, pageHashes ? JSON.stringify(pageHashes) : null, roomId, head.name);
+    const last = this.db
+      .query<{ revision: number | null }, [string, string]>("SELECT MAX(revision) AS revision FROM keyframes WHERE room_id = ? AND doc_name = ?")
+      .get(roomId, head.name)?.revision;
+    if (last === null || last === undefined || head.revision - last >= this.keyframeInterval) {
+      this.insertKeyframe(roomId, head.name, { revision: head.revision, sha256: head.sha256 });
+    }
+  }
+
+  // History ----------------------------------------------------------------------------------------------
+
+  /** The keyframes of a document, oldest first. */
+  keyframes(roomId: string, docName: string): Keyframe[] {
+    return this.db
+      .query<Keyframe, [string, string]>("SELECT revision, sha256 FROM keyframes WHERE room_id = ? AND doc_name = ? ORDER BY revision")
+      .all(roomId, docName);
+  }
+
+  /** The session entries of a document with a revision above `after` and at most `through`, in order: what is
+   * replayed on revision `after` to rebuild revision `through`. */
+  entriesBetween(roomId: string, docName: string, after: number, through: number): RoomSessionEntry[] {
+    return this.db
+      .query<EntryRow, [string, string, number, number]>(
+        `SELECT ${ENTRY_COLUMNS} FROM session_log WHERE room_id = ? AND doc_name = ? AND revision > ? AND revision <= ? ORDER BY revision`,
+      )
+      .all(roomId, docName, after, through)
+      .map(entryOf);
+  }
+
+  private insertKeyframe(roomId: string, docName: string, keyframe: Keyframe): void {
+    this.db
+      .query("INSERT OR IGNORE INTO keyframes (room_id, doc_name, revision, sha256) VALUES (?, ?, ?, ?)")
+      .run(roomId, docName, keyframe.revision, keyframe.sha256);
+  }
+
+  /** Give every document without a keyframe the ones `insertDocument` and `setHead` would have recorded: a database
+   * written before keyframes were kept has none. Revision 0 is the base of the first entry (or the head, when nothing
+   * was committed). Only the head of a commit can be a keyframe, since only its bytes were stored: the last entry of
+   * a run that shares `committed_at`, which is the time every entry of one commit carries. */
+  private backfillKeyframes(): void {
+    const documents = this.db
+      .query<{ room_id: string; name: string; revision: number; sha256: string }, []>(
+        "SELECT room_id, name, revision, sha256 FROM documents AS d WHERE NOT EXISTS (SELECT 1 FROM keyframes AS k WHERE k.room_id = d.room_id AND k.doc_name = d.name)",
+      )
+      .all();
+    if (documents.length === 0) return;
+    this.transaction(() => {
+      for (const document of documents) {
+        const entries = this.db
+          .query<{ revision: number; base_sha256: string; result_sha256: string; committed_at: string }, [string, string]>(
+            "SELECT revision, base_sha256, result_sha256, committed_at FROM session_log WHERE room_id = ? AND doc_name = ? ORDER BY revision",
+          )
+          .all(document.room_id, document.name);
+        const first = entries[0];
+        let last: Keyframe = first === undefined ? { revision: document.revision, sha256: document.sha256 } : { revision: first.revision - 1, sha256: first.base_sha256 };
+        this.insertKeyframe(document.room_id, document.name, last);
+        for (const [i, entry] of entries.entries()) {
+          if (entries[i + 1]?.committed_at === entry.committed_at) continue;
+          if (entry.revision - last.revision < this.keyframeInterval) continue;
+          last = { revision: entry.revision, sha256: entry.result_sha256 };
+          this.insertKeyframe(document.room_id, document.name, last);
+        }
+      }
+    });
   }
 
   // Session log ------------------------------------------------------------------------------------------
 
   sessionLog(roomId: string): RoomSessionEntry[] {
     return this.db
-      .query<EntryRow, [string]>(
-        "SELECT seq, doc_name, revision, base_sha256, result_sha256, author, batch, proposal_id, approved_by, committed_at FROM session_log WHERE room_id = ? ORDER BY seq",
-      )
+      .query<EntryRow, [string]>(`SELECT ${ENTRY_COLUMNS} FROM session_log WHERE room_id = ? ORDER BY seq`)
       .all(roomId)
       .map(entryOf);
   }
@@ -459,4 +571,68 @@ export class RoomStore {
       comments: this.threads(roomId),
     };
   }
+}
+
+/** Where `reconstructRevision` reads bytes from and replays batches with. */
+export type HistorySources = { blobs: Pick<BlobStore, "get">; engine: Pick<DocumentEngine, "replay"> };
+
+/**
+ * The bytes of revision `revision` of a document. The head is read as it is. Any other revision is rebuilt from the
+ * nearest keyframe at or below it whose blob is stored, by replaying the pinned batches of the session entries after
+ * it, in one engine call; a keyframe whose blob is gone (retention removed it, or it was never stored) passes the
+ * work to the keyframe before it. Every step the engine reports must give the bytes the session log names, so what
+ * comes back is byte for byte the revision that was committed. Throws when the revision does not exist, when the log
+ * does not chain from the keyframe, when the replay gives other bytes, and when no keyframe at or below the revision
+ * has its bytes stored.
+ */
+export async function reconstructRevision(
+  store: RoomStore,
+  sources: HistorySources,
+  roomId: string,
+  docName: string,
+  revision: number,
+): Promise<Uint8Array> {
+  const document = store.document(roomId, docName);
+  if (document === null) throw new Error(`document ${docName} does not exist in ${roomId}`);
+  const { head } = document;
+  if (!Number.isSafeInteger(revision) || revision < 0 || revision > head.revision) {
+    throw new RangeError(`${docName} in ${roomId} has revisions 0 to ${head.revision}; ${revision} is not one of them`);
+  }
+  const candidates = store
+    .keyframes(roomId, docName)
+    .filter((keyframe) => keyframe.revision <= revision)
+    .reverse();
+  if (revision === head.revision) candidates.unshift({ revision, sha256: head.sha256 });
+  const missing: string[] = [];
+  for (const keyframe of candidates) {
+    const bytes = await sources.blobs.get(keyframe.sha256);
+    if (bytes === null) {
+      missing.push(`revision ${keyframe.revision} (${keyframe.sha256})`);
+      continue;
+    }
+    if (keyframe.revision === revision) return bytes;
+    const entries = store.entriesBetween(roomId, docName, keyframe.revision, revision);
+    let at = keyframe.sha256;
+    for (const [i, entry] of entries.entries()) {
+      if (entry.revision !== keyframe.revision + i + 1 || entry.base_sha256 !== at) {
+        throw new Error(`the session log of ${docName} in ${roomId} does not chain from keyframe ${keyframe.revision} to revision ${revision}: entry ${entry.revision} is based on ${entry.base_sha256}, not ${at}`);
+      }
+      at = entry.result_sha256;
+    }
+    if (entries.length !== revision - keyframe.revision) {
+      throw new Error(`the session log of ${docName} in ${roomId} holds ${entries.length} of the ${revision - keyframe.revision} entries after keyframe ${keyframe.revision}`);
+    }
+    const replay = await sources.engine.replay({ format: head.format, name: docName, bytes, batches: entries.map((entry) => entry.batch), save: true, pages: false });
+    for (const [i, entry] of entries.entries()) {
+      const step = replay.steps[i];
+      if (step?.sha256 !== entry.result_sha256) {
+        throw new Error(`replaying revision ${entry.revision} of ${docName} in ${roomId} gave ${step?.sha256 ?? "no step"}, and the session log names ${entry.result_sha256}`);
+      }
+    }
+    if (replay.bytes === null || sha256Hex(replay.bytes) !== at) {
+      throw new Error(`replaying ${docName} in ${roomId} to revision ${revision} did not give the bytes ${at}`);
+    }
+    return replay.bytes;
+  }
+  throw new Error(`revision ${revision} of ${docName} in ${roomId} cannot be rebuilt: no keyframe at or below it has its bytes stored (missing: ${missing.join(", ")})`);
 }

@@ -13,16 +13,20 @@ import {
   cellAt,
   cellBoxes,
   cellKey,
+  cellOutlines,
   cellRect,
   changedCells,
   colToNum,
   layoutOf,
+  mergeChange,
   mergeDecision,
   numToCol,
   parseCellAddress,
   revealOffset,
+  selectedCellKey,
   sheetMarks,
   sheetTabs,
+  tagSize,
   usedExtent,
   windowFor,
   type ReviewReads,
@@ -31,8 +35,8 @@ import {
 /** The engine's recorded reply for a 6x6 sheet with a merge B2:D4, hidden column C and hidden row 3. */
 const merged = replies["merged-widths-frozen"] as unknown as SheetViewport;
 
-const change = (address: string, cause: number | undefined, kind = "cell"): Change =>
-  ({ address, change: "modified", kind, parts: [], ...(cause === undefined ? {} : { cause }) }) as Change;
+const change = (address: string, cause: number | undefined, kind = "cell", type: Change["change"] = "modified"): Change =>
+  ({ address, change: type, kind, parts: [], ...(cause === undefined ? {} : { cause }) }) as Change;
 
 /** A history entry of `ops` ops whose changes are `changes` (each names the op that caused it). */
 function entry(revision: number, ops: number, changes: Change[]): HistoryEntry {
@@ -288,5 +292,92 @@ describe("cell boxes", () => {
     expect(alignOf(undefined, { error: "#DIV/0!" })).toBe("center");
     expect(alignOf(undefined, { string: "x" })).toBe("left");
     expect(alignOf(undefined, null)).toBe("left");
+  });
+});
+
+describe("change outlines", () => {
+  /** The engine's recorded reply for the Model sheet (sheet:#2) of fixtures/xlsx/model-finance.xlsx: years 2026.. in row 1, labels in column A. */
+  const model = replies["model-finance"] as unknown as SheetViewport;
+  const layout = layoutOf(model, 10, 25);
+  const size: [number, number] = [layout.width, layout.height];
+  const outlinesOf = (history: HistoryEntry[], selectedKey: string | null, decisions: Record<string, Decision> = {}) => {
+    const changed = changedCells(reads(history, decisions));
+    const boxes = cellBoxes(model, layout, 10, 25, [...changed.values()].filter((c) => c.sheetId === 2));
+    return { boxes, outlines: cellOutlines(boxes, changed, 2, selectedKey, size) };
+  };
+  const overlaps = (a: { x: number; y: number; w: number; h: number }, b: { x: number; y: number; w: number; h: number }) =>
+    Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x) > 1 && Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y) > 1;
+
+  test("a cell's records name one change type: added then modified stays added, a removal is the last word", () => {
+    expect(mergeChange("modified", "modified")).toBe("modified");
+    expect(mergeChange("added", "modified")).toBe("added");
+    expect(mergeChange("modified", "removed")).toBe("removed");
+    expect(mergeChange("removed", "added")).toBe("modified");
+    const twice = [entry(1, 1, [change("sheet:#2/cell:B3", 0, "cell", "added")]), entry(2, 1, [change("sheet:#2/cell:B3", 0)])];
+    expect(changedCells(reads(twice)).get("2!B3")?.change).toBe("added");
+  });
+
+  test("each changed cell is outlined in its box and tagged modified, added or removed, as a changed paragraph is", () => {
+    const history = [
+      entry(1, 3, [
+        change("sheet:#2/cell:C1", 0),
+        change("sheet:#2/cell:B3", 1, "cell", "added"),
+        change("sheet:#2/cell:A10", 2, "cell", "removed"),
+        change("sheet:#2/row:4", 0, "row"),
+        change("sheet:#1/cell:C1", 0),
+      ]),
+    ];
+    const { boxes, outlines } = outlinesOf(history, null, { "1:2": "reject" });
+    // In reading order; the other sheet's C1 and the row change are not outlined on this sheet.
+    expect(outlines.map((o) => [o.a1, o.change, o.decision])).toEqual([
+      ["C1", "modified", "pending"],
+      ["B3", "added", "pending"],
+      ["A10", "removed", "reject"],
+    ]);
+    for (const o of outlines) {
+      const box = boxes.find((b) => b.a1 === o.a1)!;
+      expect(o.box).toEqual({ x: box.x, y: box.y, w: box.w, h: box.h });
+      expect(o.selected).toBe(false);
+      // The tag names the change type at its rendered size, beside the box and inside the grid.
+      expect([o.tag.w, o.tag.h]).toEqual(tagSize(o.change));
+      expect(overlaps(o.tag, o.box)).toBe(false);
+      expect(o.tag.x >= 0 && o.tag.y >= 0 && o.tag.x + o.tag.w <= size[0] && o.tag.y + o.tag.h <= size[1]).toBe(true);
+    }
+  });
+
+  test("the walkthrough change, Model!C1 2027 to 2031, gets its modified tag on the empty cell under it, clear of the years", () => {
+    const { boxes, outlines } = outlinesOf([entry(1, 1, [change("sheet:#2/cell:C1", 0)])], null);
+    expect(outlines).toHaveLength(1);
+    const [c1] = outlines;
+    expect(c1).toMatchObject({ a1: "C1", change: "modified", box: { x: 253, y: 0, w: 64, h: 20 } });
+    expect(c1!.tag).toEqual({ x: 253, y: 20, w: tagSize("modified")[0], h: 14, free: true });
+    for (const other of boxes) if (other.a1 !== "C1" && other.text !== "") expect(overlaps(c1!.tag, other)).toBe(false);
+  });
+
+  test("a tag with no place clear of other cells' text shows only on demand", () => {
+    // A1's label is boxed in by the year row, the labels under it and the grid's top and left edges.
+    const { outlines } = outlinesOf([entry(1, 1, [change("sheet:#2/cell:A1", 0)])], null);
+    expect(outlines.map((o) => [o.a1, o.tag.free])).toEqual([["A1", false]]);
+  });
+
+  test("selecting a change in the changes panel selects its cell's outline", () => {
+    const history = [entry(1, 2, [change("sheet:#2/row:3", 0, "row"), change("sheet:#2/cell:C1", 0), change("sheet:#2/cell:D1", 1)])];
+    expect(selectedCellKey(history, { revision: 1, index: 1 })).toBe("2!C1");
+    expect(selectedCellKey(history, { revision: 1, index: 2 })).toBe("2!D1");
+    // A change to anything but a cell, an unknown change set or no selection selects no outline.
+    expect(selectedCellKey(history, { revision: 1, index: 0 })).toBeNull();
+    expect(selectedCellKey(history, { revision: 2, index: 1 })).toBeNull();
+    expect(selectedCellKey(history, null)).toBeNull();
+
+    const { outlines } = outlinesOf(history, selectedCellKey(history, { revision: 1, index: 2 }));
+    expect(outlines.map((o) => [o.a1, o.selected])).toEqual([
+      ["C1", false],
+      ["D1", true],
+    ]);
+    expect(outlinesOf(history, null).outlines.some((o) => o.selected)).toBe(false);
+  });
+
+  test("a sheet with no changed cell draws no outline", () => {
+    expect(outlinesOf([entry(1, 1, [change("sheet:#1/cell:C1", 0)])], null).outlines).toEqual([]);
   });
 });

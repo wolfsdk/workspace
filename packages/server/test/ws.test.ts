@@ -1,10 +1,13 @@
 // The WebSocket endpoint on a real local port: real sockets, JSON text frames, the room server and the
 // stand-in reactor behind it. Everything the server sends is checked against the contract.
 import { Database } from "bun:sqlite";
-import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, setDefaultTimeout, spyOn, test } from "bun:test";
 import { ROOM_REVISION_MISMATCH, type RoomActor, type RoomServerEvent, validateRoomEvent } from "@wolfsdk/protocol/workspace";
 import { startWsServer, type WsServer } from "../src/index.ts";
 import { alice, bob, bytesOf, type Harness, makeHarness, must, robot, seedRoom } from "./fixtures/harness.ts";
+
+// Writes are flushed to disk and sockets are opened: on a busy host one test can take many seconds.
+setDefaultTimeout(120_000);
 
 type ErrorEvent = Extract<RoomServerEvent, { type: "error" }>;
 

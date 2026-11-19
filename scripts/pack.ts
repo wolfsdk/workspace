@@ -24,7 +24,7 @@ const REPOSITORY = "https://github.com/wolfsdk/workspace";
 const BUN_RANGE = ">=1.4.0";
 
 /** Directories under `packages/`, each before the packages that depend on it. */
-const PACKAGES = ["protocol", "server", "mcp", "packs", "workspace-cli"] as const;
+const PACKAGES = ["protocol", "assistant", "server", "mcp", "packs", "workspace-cli"] as const;
 
 interface WorkspaceManifest {
   name: string;

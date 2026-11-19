@@ -13,6 +13,7 @@
     "test": "bun test"
   },
   "dependencies": {
+    "@wolfsdk/assistant": "workspace:*",
     "@wolfsdk/protocol": "workspace:*"
   },
   "repository": {

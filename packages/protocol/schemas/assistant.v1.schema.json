@@ -1,0 +1,281 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://wolfsdk.com/schemas/assistant.v1.schema.json",
+  "title": "Wolf Workspace assistant turn",
+  "description": "One finished task of the Workspace assistant (wolfsdk.assistant.v1): a request a signed-in user made from the panel beside a document, the tool steps the assistant took with the tools of wolfsdk.mcp-workspace.v1, the proposals it opened, its answer, and the tokens the model used. $defs.clientMessage and $defs.serverEvent describe the JSON text messages a Workspace server exchanges with that user's connection, beside wolfsdk.room.v1 and never inside it: a room message is never an assistant message, and assistant events go only to the connection that asked. $defs.usageSummary is the usage of one workspace in one calendar month. The assistant never commits: every change it makes is a proposal of the room, decided by a user. Every timestamp is an RFC 3339 UTC instant, and a month is a calendar month in UTC.",
+  "$ref": "#/$defs/turn",
+  "$defs": {
+    "turn": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["contract", "task_id", "conversation_id", "room_id", "workspace_id", "user", "assistant", "request", "outcome", "answer", "failure", "steps", "proposal_ids", "model", "usage", "started_at", "finished_at"],
+      "properties": {
+        "contract": {"const": "wolfsdk.assistant.v1"},
+        "task_id": {"$ref": "#/$defs/id"},
+        "conversation_id": {"description": "The conversation the task belongs to: the tasks of one conversation are the context of the next.", "$ref": "#/$defs/id"},
+        "room_id": {"$ref": "#/$defs/id"},
+        "workspace_id": {"$ref": "#/$defs/id"},
+        "user": {"description": "Who asked, and whose seat the task counts against.", "$ref": "#/$defs/userActor"},
+        "assistant": {"description": "The agent actor the assistant acted as in the room: the author of its proposals.", "$ref": "#/$defs/agentActor"},
+        "request": {"$ref": "#/$defs/request"},
+        "outcome": {"$ref": "#/$defs/outcome"},
+        "answer": {"description": "The text the assistant answered with; empty when it gave none.", "type": "string"},
+        "failure": {"description": "Why the task failed, for outcome failed; null otherwise.", "anyOf": [{"$ref": "#/$defs/text"}, {"type": "null"}]},
+        "steps": {"type": "array", "items": {"$ref": "#/$defs/step"}},
+        "proposal_ids": {"description": "The proposals the task opened, in the order of the steps that opened them.", "type": "array", "items": {"$ref": "#/$defs/id"}},
+        "model": {"description": "The model name the server was configured with.", "$ref": "#/$defs/name"},
+        "usage": {"$ref": "#/$defs/usage"},
+        "started_at": {"$ref": "#/$defs/timestamp"},
+        "finished_at": {"$ref": "#/$defs/timestamp"}
+      }
+    },
+    "uint": {"type": "integer", "minimum": 0},
+    "id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"},
+    "name": {"type": "string", "minLength": 1},
+    "text": {"type": "string", "minLength": 1},
+    "optName": {"anyOf": [{"$ref": "#/$defs/name"}, {"type": "null"}]},
+    "optText": {"anyOf": [{"$ref": "#/$defs/text"}, {"type": "null"}]},
+    "optId": {"anyOf": [{"$ref": "#/$defs/id"}, {"type": "null"}]},
+    "timestamp": {
+      "description": "RFC 3339 UTC instant.",
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$"
+    },
+    "month": {"description": "A calendar month in UTC, such as 2026-11.", "type": "string", "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])$"},
+    "askText": {"description": "What the user asked, at most 16000 characters.", "type": "string", "minLength": 1, "maxLength": 16000},
+    "userActor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "id", "name"],
+      "properties": {"kind": {"const": "user"}, "id": {"$ref": "#/$defs/id"}, "name": {"$ref": "#/$defs/name"}}
+    },
+    "agentActor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "id", "name"],
+      "properties": {"kind": {"const": "agent"}, "id": {"$ref": "#/$defs/id"}, "name": {"$ref": "#/$defs/name"}}
+    },
+    "tool": {
+      "description": "A tool of wolfsdk.mcp-workspace.v1.",
+      "enum": ["workspace_list", "doc_read", "doc_search", "doc_create", "doc_edit", "doc_inspect_visual", "pack_link_refresh", "comment_reply"]
+    },
+    "outcome": {
+      "description": "How the task ended. proposed: it opened at least one proposal. answered: it answered without changing anything. cancelled: the user stopped it. failed: the model or the server could not finish it. turn_limit and token_limit: it reached a cap of the server. A task that ended any other way than answered may still have opened proposals.",
+      "enum": ["answered", "proposed", "cancelled", "failed", "turn_limit", "token_limit"]
+    },
+    "stepStatus": {
+      "description": "running: the tool call has started. ok: it returned a result. failed: the tool refused it, or it did not finish.",
+      "enum": ["running", "ok", "failed"]
+    },
+    "step": {
+      "description": "One tool call of a task. A server announces a step when it starts and again when it ends, under the same number.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["step", "tool", "doc_name", "status"],
+      "properties": {
+        "step": {"description": "1-based position among the steps of the task.", "type": "integer", "minimum": 1},
+        "tool": {"$ref": "#/$defs/tool"},
+        "doc_name": {"description": "The document the call names, or null when it names none.", "$ref": "#/$defs/optName"},
+        "status": {"$ref": "#/$defs/stepStatus"},
+        "summary": {"description": "One line a person can read: what was read, changed or refused.", "$ref": "#/$defs/text"},
+        "proposal_id": {"description": "The proposal of the room this step opened.", "$ref": "#/$defs/id"}
+      }
+    },
+    "request": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["text", "doc_name", "target_address"],
+      "properties": {
+        "text": {"$ref": "#/$defs/askText"},
+        "doc_name": {"description": "The document open beside the panel, or null.", "$ref": "#/$defs/optName"},
+        "target_address": {"description": "The selection in that document, as an Agent API address, or null.", "$ref": "#/$defs/optText"}
+      }
+    },
+    "usage": {
+      "description": "Tokens of the chat-completions calls of a task, or of the tasks summed. cached_tokens is the part of prompt_tokens the provider served from its prompt cache.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["model_calls", "prompt_tokens", "cached_tokens", "completion_tokens"],
+      "properties": {
+        "model_calls": {"$ref": "#/$defs/uint"},
+        "prompt_tokens": {"$ref": "#/$defs/uint"},
+        "cached_tokens": {"$ref": "#/$defs/uint"},
+        "completion_tokens": {"$ref": "#/$defs/uint"}
+      }
+    },
+    "allowance": {
+      "description": "The assistant tasks of one seat in one calendar month. A task counts when its first model call is made. At the limit the assistant stops until resets_at; every other function of the room is unaffected.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["period", "limit", "used", "resets_at"],
+      "properties": {
+        "period": {"$ref": "#/$defs/month"},
+        "limit": {"description": "Tasks the seat may start in the month, or null when the server does not meter.", "type": ["integer", "null"], "minimum": 0},
+        "used": {"$ref": "#/$defs/uint"},
+        "resets_at": {"description": "The first instant of the next month.", "$ref": "#/$defs/timestamp"}
+      }
+    },
+    "seatUsage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["user_id", "tasks", "usage"],
+      "properties": {"user_id": {"$ref": "#/$defs/id"}, "tasks": {"$ref": "#/$defs/uint"}, "usage": {"$ref": "#/$defs/usage"}}
+    },
+    "usageSummary": {
+      "description": "The assistant usage of one workspace in one calendar month: its counted tasks and their tokens, in total and per seat.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["contract", "workspace_id", "period", "tasks", "usage", "seats"],
+      "properties": {
+        "contract": {"const": "wolfsdk.assistant.v1"},
+        "workspace_id": {"$ref": "#/$defs/id"},
+        "period": {"$ref": "#/$defs/month"},
+        "tasks": {"$ref": "#/$defs/uint"},
+        "usage": {"$ref": "#/$defs/usage"},
+        "seats": {"type": "array", "items": {"$ref": "#/$defs/seatUsage"}}
+      }
+    },
+    "assistantState": {
+      "description": "ready: a request will be taken. not_configured: the server has no model endpoint. allowance_exhausted: the seat has used its tasks for the month.",
+      "enum": ["ready", "not_configured", "allowance_exhausted"]
+    },
+    "ev_status": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "request_id", "state", "model", "allowance"],
+      "properties": {
+        "type": {"const": "assistant.status"},
+        "request_id": {"$ref": "#/$defs/id"},
+        "state": {"$ref": "#/$defs/assistantState"},
+        "model": {"description": "The configured model name; null when not configured.", "$ref": "#/$defs/optName"},
+        "allowance": {"description": "The allowance of the asking seat; null when not configured.", "anyOf": [{"$ref": "#/$defs/allowance"}, {"type": "null"}]}
+      }
+    },
+    "ev_task_started": {
+      "description": "The server took an ask: the task has an id, and the allowance already counts it.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "request_id", "task_id", "conversation_id", "allowance", "started_at"],
+      "properties": {
+        "type": {"const": "assistant.task.started"},
+        "request_id": {"$ref": "#/$defs/id"},
+        "task_id": {"$ref": "#/$defs/id"},
+        "conversation_id": {"$ref": "#/$defs/id"},
+        "allowance": {"$ref": "#/$defs/allowance"},
+        "started_at": {"$ref": "#/$defs/timestamp"}
+      }
+    },
+    "ev_step": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "task_id", "step"],
+      "properties": {"type": {"const": "assistant.step"}, "task_id": {"$ref": "#/$defs/id"}, "step": {"$ref": "#/$defs/step"}}
+    },
+    "ev_text": {
+      "description": "The next piece of the answer, in order.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "task_id", "delta"],
+      "properties": {"type": {"const": "assistant.text"}, "task_id": {"$ref": "#/$defs/id"}, "delta": {"$ref": "#/$defs/text"}}
+    },
+    "ev_task_finished": {
+      "description": "The last event of a task: the turn as it was stored.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "task_id", "turn"],
+      "properties": {"type": {"const": "assistant.task.finished"}, "task_id": {"$ref": "#/$defs/id"}, "turn": {"$ref": "#/$defs/turn"}}
+    },
+    "ev_conversation": {
+      "description": "The answer to assistant.history: the stored turns of one conversation, oldest first; a null conversation_id and no turns when the user has none in the room.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "request_id", "conversation_id", "turns"],
+      "properties": {
+        "type": {"const": "assistant.conversation"},
+        "request_id": {"$ref": "#/$defs/id"},
+        "conversation_id": {"$ref": "#/$defs/optId"},
+        "turns": {"type": "array", "items": {"$ref": "#/$defs/turn"}}
+      }
+    },
+    "ev_error": {
+      "description": "A refused assistant message. Nothing was started and nothing counts against the allowance.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "request_id", "code", "message"],
+      "properties": {
+        "type": {"const": "assistant.error"},
+        "request_id": {"$ref": "#/$defs/optId"},
+        "code": {"enum": ["BAD_REQUEST", "NOT_IN_ROOM", "NOT_CONFIGURED", "FORBIDDEN", "BUSY", "UNKNOWN_TASK", "UNKNOWN_CONVERSATION"]},
+        "message": {"type": "string"}
+      }
+    },
+    "ev_allowance_exhausted": {
+      "description": "An ask refused because the seat has used its tasks for the month. The assistant stops; editing, review, comments and outside agents continue.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "request_id", "code", "message", "allowance"],
+      "properties": {
+        "type": {"const": "assistant.error"},
+        "request_id": {"$ref": "#/$defs/optId"},
+        "code": {"const": "ALLOWANCE_EXHAUSTED"},
+        "message": {"type": "string"},
+        "allowance": {"$ref": "#/$defs/allowance"}
+      }
+    },
+    "serverEvent": {
+      "anyOf": [
+        {"$ref": "#/$defs/ev_status"},
+        {"$ref": "#/$defs/ev_task_started"},
+        {"$ref": "#/$defs/ev_step"},
+        {"$ref": "#/$defs/ev_text"},
+        {"$ref": "#/$defs/ev_task_finished"},
+        {"$ref": "#/$defs/ev_conversation"},
+        {"$ref": "#/$defs/ev_allowance_exhausted"},
+        {"$ref": "#/$defs/ev_error"}
+      ]
+    },
+    "msg_status": {
+      "description": "Ask whether the assistant is available to this seat. Answered by assistant.status.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "request_id"],
+      "properties": {"type": {"const": "assistant.status"}, "request_id": {"$ref": "#/$defs/id"}}
+    },
+    "msg_ask": {
+      "description": "Start a task. Answered by assistant.task.started, then steps and text, then assistant.task.finished; or by assistant.error.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "request_id", "conversation_id", "text", "doc_name", "target_address"],
+      "properties": {
+        "type": {"const": "assistant.ask"},
+        "request_id": {"$ref": "#/$defs/id"},
+        "conversation_id": {"description": "The conversation to continue, or null to start one.", "$ref": "#/$defs/optId"},
+        "text": {"$ref": "#/$defs/askText"},
+        "doc_name": {"description": "The document open beside the panel, or null.", "$ref": "#/$defs/optName"},
+        "target_address": {"description": "The selection in that document, as an Agent API address, or null.", "$ref": "#/$defs/optText"}
+      }
+    },
+    "msg_cancel": {
+      "description": "Stop a running task of this user. The task ends with assistant.task.finished and outcome cancelled.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "request_id", "task_id"],
+      "properties": {"type": {"const": "assistant.cancel"}, "request_id": {"$ref": "#/$defs/id"}, "task_id": {"$ref": "#/$defs/id"}}
+    },
+    "msg_history": {
+      "description": "Ask for the stored turns of a conversation of this user in the room, or of the latest one with null. Answered by assistant.conversation.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "request_id", "conversation_id"],
+      "properties": {"type": {"const": "assistant.history"}, "request_id": {"$ref": "#/$defs/id"}, "conversation_id": {"$ref": "#/$defs/optId"}}
+    },
+    "clientMessage": {
+      "anyOf": [
+        {"$ref": "#/$defs/msg_status"},
+        {"$ref": "#/$defs/msg_ask"},
+        {"$ref": "#/$defs/msg_cancel"},
+        {"$ref": "#/$defs/msg_history"}
+      ]
+    }
+  }
+}

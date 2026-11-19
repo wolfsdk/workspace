@@ -3,6 +3,20 @@
 // malformed or invalid frame, a lie the server can check): the worker is discarded and nothing it said is
 // trusted.
 import type { ReactorPipeCommand } from "@wolfsdk/protocol/workspace";
+import type { PlanLimitReason, ReadOnlyMode, ReadOnlyReason, RoomFailure } from "./service.ts";
+
+/** The stable codes of a refusal that a plan caused (`RoomFailure.reason`, and the first word of its message). */
+export const PLAN_SEAT_LIMIT: PlanLimitReason = "plan-seat-limit";
+export const PLAN_WORKSPACE_LIMIT: PlanLimitReason = "plan-workspace-limit";
+/** The stable code of the refusal of a write in a read-only workspace (`RoomFailure.reason`, and the first word of
+ * its message). */
+export const WORKSPACE_READ_ONLY: ReadOnlyReason = "workspace-read-only";
+
+/** The refusal of a write in a read-only workspace: `LICENSE_LIMIT` on the wire, as a plan limit is, with the stable
+ * `reason` and a message that is that code, the reason the workspace is read-only and the way out of it. */
+export function readOnlyFailure(mode: ReadOnlyMode): RoomFailure {
+  return { code: "LICENSE_LIMIT", message: `${WORKSPACE_READ_ONLY}: ${mode.reason} ${mode.upgrade}`, reason: WORKSPACE_READ_ONLY };
+}
 
 const ENGINE_FAILURE_CODES: Readonly<Record<string, true>> = {
   "reactor-document-limit": true,

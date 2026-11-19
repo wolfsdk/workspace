@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://wolfsdk.com/schemas/mcp-workspace.v1.schema.json",
   "title": "Wolf Workspace MCP tool call",
-  "description": "A tools/call request of the compact Wolf Workspace MCP server (wolfsdk.mcp-workspace.v1, Streamable HTTP). `name` is one of the eight tools in `x-wolfsdk-tools`; `arguments` validates against the inputSchema of the tool with that name. The tool list, serialized, stays under 14000 UTF-8 bytes so an agent pays under 3500 tokens for it.",
+  "description": "A tools/call request of the compact Wolf Workspace MCP server (wolfsdk.mcp-workspace.v1, Streamable HTTP). `name` is one of the eight tools in `x-wolfsdk-tools`; `arguments` validates against the inputSchema of the tool with that name. The tool list, serialized, stays under 14000 UTF-8 bytes so an agent pays under 3500 tokens for it. `$defs` documents members of tool results that the tool list does not carry.",
   "type": "object",
   "additionalProperties": false,
   "required": ["name", "arguments"],
@@ -10,10 +10,49 @@
     "name": {"enum": ["workspace_list", "doc_read", "doc_search", "doc_create", "doc_edit", "doc_inspect_visual", "pack_link_refresh", "comment_reply"]},
     "arguments": {"type": "object"}
   },
+  "$defs": {
+    "workspace_list_pack": {
+      "description": "One entry of `packs` in the workspace_list result. `definitions` is there when the server has the pack manifests; a server with only a pack refresher lists pack, bindings and title.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["pack", "bindings"],
+      "properties": {
+        "pack": {"type": "string", "minLength": 1, "description": "pack_id, as pack_link_refresh takes it."},
+        "bindings": {"type": "array", "items": {"type": "string", "minLength": 1}, "description": "Binding ids, in manifest order."},
+        "title": {"type": "string", "description": "The pack's name."},
+        "definitions": {"type": "array", "items": {"$ref": "#/$defs/pack_binding_definition"}, "description": "Each binding, in the order of bindings."}
+      }
+    },
+    "pack_binding_definition": {
+      "description": "What one pack binding reads and writes. The value is read from the room's head of the source workbook, as stored (a formula cell holds its cached value); a refresh may recalculate first. A source that can not be read leaves value out and says why in problem.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "kind", "selector", "source_doc", "source_address", "target_doc", "target_address"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1, "description": "Binding id, as pack_link_refresh takes it."},
+        "kind": {"enum": ["docx_table", "docx_bookmark", "pptx_table", "pptx_chart_series", "pptx_fit_headline"], "description": "Target kind."},
+        "selector": {"type": "object", "additionalProperties": true, "required": ["type"], "description": "The manifest selector (wolfsdk.pack.v1): {type: cell or range, sheet, ref}, {type: table, name} or {type: defined_name, name}."},
+        "source_doc": {"type": ["string", "null"], "description": "Workspace document holding the source; null when the binding names no source of the pack."},
+        "source_address": {"type": ["string", "null"], "description": "Agent API address of the cells the binding reads, for doc_read: sheet:<name>/cell:<A1> or sheet:<name>/range:<A1>:<A1>, with a defined name or a table resolved to its cells. null when a defined name is a constant or the source could not be resolved."},
+        "source_revision": {"type": "integer", "minimum": 0, "description": "Revision of source_doc the value was read at."},
+        "value": {
+          "anyOf": [
+            {"type": ["string", "number", "boolean", "null"]},
+            {"type": "array", "items": {"type": "array", "items": {"type": ["string", "number", "boolean", "null"]}}}
+          ],
+          "description": "Current source value: one value for a cell or constant, rows of values for a range or table. null is an empty cell."
+        },
+        "value_truncated": {"const": true, "description": "value holds the first 50 cells of the range only; doc_read source_address for the rest."},
+        "target_doc": {"type": "string", "minLength": 1, "description": "DOCX or PPTX document the binding writes into."},
+        "target_address": {"type": "string", "minLength": 1, "description": "Agent API address of the target in target_doc, for doc_read; a docx_bookmark is bookmark:<name>."},
+        "problem": {"type": "string", "description": "Why the source address or value is missing."}
+      }
+    }
+  },
   "x-wolfsdk-tools": [
     {
       "name": "workspace_list",
-      "description": "List the workspace's documents, packs, open proposals and open comment threads. Start here: each document shows its format, head revision and sha256; each thread shows its thread_id, anchor and messages.",
+      "description": "List the workspace's documents, packs, open proposals and open comment threads. Start here: each document shows its format, head revision and sha256; each pack binding its source cells, current value and target; each thread its thread_id, anchor and messages.",
       "inputSchema": {
         "type": "object",
         "additionalProperties": false,
@@ -64,13 +103,13 @@
           "name": {"type": "string", "minLength": 1, "description": "New document name with extension."},
           "format": {"enum": ["docx", "xlsx", "pptx"]},
           "template": {"type": "string", "minLength": 1, "description": "Existing document to copy."},
-          "ops": {"type": "array", "minItems": 1, "items": {"type": "object", "required": ["op"], "properties": {"op": {"type": "string", "minLength": 1}}}, "description": "Agent API operations."}
+          "ops": {"type": "array", "minItems": 1, "items": {"type": "object", "additionalProperties": true, "required": ["op"], "properties": {"op": {"type": "string", "minLength": 1}}}, "description": "Agent API operations."}
         }
       }
     },
     {
       "name": "doc_edit",
-      "description": "Edit a document with one Agent API op batch. propose records a proposal for review; commit changes the head and is refused with REVISION_MISMATCH if base_revision is not the head: re-read, rebase, retry.",
+      "description": "Edit a document with one Agent API op batch. DOCX: use replace-text (target, find, replace) for words, or set (target, value.text) for whole text. PPTX: use replace-text for words, or set (target, value.text) for whole shape text. XLSX: use set (target, value.string) for cell text. PDF is read-only. Use propose for review, commit to change the head; on REVISION_MISMATCH re-read, rebase, retry.",
       "inputSchema": {
         "type": "object",
         "additionalProperties": false,
@@ -79,7 +118,7 @@
           "doc": {"type": "string", "minLength": 1},
           "base_revision": {"type": "integer", "minimum": 0, "description": "Revision the ops were written against, from doc_read."},
           "mode": {"enum": ["propose", "commit"]},
-          "ops": {"type": "array", "minItems": 1, "items": {"type": "object", "required": ["op"], "properties": {"op": {"type": "string", "minLength": 1}}}, "description": "Agent API operations, e.g. {\"op\":\"set\",\"target\":\"para:@1\",\"value\":{\"text\":\"New text\"}}."},
+          "ops": {"type": "array", "minItems": 1, "items": {"type": "object", "additionalProperties": true, "required": ["op"], "properties": {"op": {"type": "string", "minLength": 1}}}, "description": "Agent API operations, e.g. {\"op\":\"set\",\"target\":\"para:@1\",\"value\":{\"text\":\"New text\"}}."},
           "message": {"type": "string", "description": "Why, shown to reviewers."}
         }
       }

@@ -660,18 +660,20 @@
 .we-rv-sheet-cell--center {
   justify-content: center;
 }
+/* A changed cell's fill is the reviewer's decision on it; its outline and change-type tag are the
+ * page outline's (`.we-review-box`, drawn over the cell by SheetReviewView.tsx). */
 .we-rv-sheet-cell--changed {
-  outline: 2px solid var(--we-warning);
-  outline-offset: -2px;
   box-shadow: inset 0 0 0 100px rgba(255, 244, 217, 0.55);
 }
 .we-rv-sheet-cell--changed.we-rv-d-approve {
-  outline-color: var(--we-success);
   box-shadow: inset 0 0 0 100px rgba(230, 244, 236, 0.6);
 }
 .we-rv-sheet-cell--changed.we-rv-d-reject {
-  outline-color: var(--we-danger);
   box-shadow: inset 0 0 0 100px rgba(253, 236, 234, 0.6);
+}
+/* A tag placed over a neighbouring cell draws over that cell's focus outline. */
+.we-rv-sheet-outline > .we-review-tag {
+  z-index: 1;
 }
 .we-rv-sheet-cell--focus {
   outline: 2px solid var(--we-focus);

@@ -9,7 +9,14 @@
 //
 // Every inbound message passes `validateRoomClientMessage` and every outbound event `validateRoomEvent`.
 // Requests of one connection run one after another, in the order they arrived.
+//
+// The same connection also speaks `wolfsdk.assistant.v1`: a message whose `type` begins `assistant.` goes to
+// the assistant, in the order of the connection, and its events come back on the socket beside the events of
+// the room. An ask is answered when its task has started, so the task holds up nothing behind it. A server
+// given no assistant has one that is not configured, as the workspace server does: it says so to a client
+// that asks for its status, refuses a task, and keeps nothing.
 import {
+  isAssistantMessage,
   type RoomActor,
   type RoomClientMessage,
   type RoomServerEvent,
@@ -17,6 +24,7 @@ import {
   validateRoomClientMessage,
   validateRoomEvent,
 } from "@wolfsdk/protocol/workspace";
+import { type AssistantConnection, assistantConnection, AssistantService } from "./assistant.ts";
 import type { Result, RoomFailure, RoomService, RoomSubscription } from "./service.ts";
 
 export type WsServerOptions = {
@@ -28,6 +36,9 @@ export type WsServerOptions = {
   port?: number;
   /** Default `127.0.0.1`. */
   hostname?: string;
+  /** The assistant of the server; the caller closes it, after `stop`. Without it the assistant is not
+   * configured: a status says `not_configured` and an ask is refused with `NOT_CONFIGURED`. */
+  assistant?: AssistantService;
 };
 
 export type WsServer = {
@@ -45,6 +56,8 @@ type Connection = {
   roomId: string | null;
   subscription: RoomSubscription | null;
   closed: boolean;
+  /** This connection as the assistant sees it, once it has sent an assistant message. */
+  assistant: AssistantConnection | null;
 };
 
 const ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
@@ -62,6 +75,16 @@ const badRequest = (requestId: string | null, message: string): RoomServerEvent 
 
 export function startWsServer(options: WsServerOptions): WsServer {
   const { service, authenticate } = options;
+  // With no model endpoint the assistant runs no task, so it never calls a tool and stores nothing.
+  const assistant =
+    options.assistant ??
+    new AssistantService({
+      endpoint: null,
+      allowance: null,
+      storePath: ":memory:",
+      rooms: service,
+      tools: () => Promise.reject(new Error("the assistant of this server is not configured")),
+    });
 
   /** Validate, then send. An event that does not validate is a bug of the server, not of the client: the
    * connection is closed rather than fed something the contract does not allow. A client that does not read
@@ -135,6 +158,15 @@ export function startWsServer(options: WsServerOptions): WsServer {
     } catch {
       return send(ws, badRequest(null, "the message is not JSON"));
     }
+    if (isAssistantMessage(message)) {
+      try {
+        await assistant.handle((ws.data.assistant ??= assistantConnection(ws)), message);
+      } catch (e) {
+        console.error("room server: an assistant request failed unexpectedly", e);
+        ws.close(1011, "internal error");
+      }
+      return;
+    }
     const problems = validateRoomClientMessage(message);
     if (problems.length > 0) {
       const id = typeof message === "object" && message !== null && "request_id" in message ? message.request_id : null;
@@ -157,7 +189,7 @@ export function startWsServer(options: WsServerOptions): WsServer {
       if (new URL(request.url).pathname !== WS_PATH) return new Response("not found", { status: 404 });
       const actor = await authenticate(request);
       if (actor === null) return new Response("unauthorized", { status: 401 });
-      const data: Connection = { actor, queue: Promise.resolve(), roomId: null, subscription: null, closed: false };
+      const data: Connection = { actor, queue: Promise.resolve(), roomId: null, subscription: null, closed: false, assistant: null };
       if (upgrade.upgrade(request, { data })) return undefined;
       return new Response("expected a WebSocket upgrade", { status: 426 });
     },
@@ -180,6 +212,8 @@ export function startWsServer(options: WsServerOptions): WsServer {
     url: `ws://${server.hostname}:${server.port}${WS_PATH}`,
     async stop() {
       await server.stop(true);
+      // The assistant this server made for itself; one it was given is the caller's to close.
+      if (assistant !== options.assistant) await assistant.close();
     },
   };
 }

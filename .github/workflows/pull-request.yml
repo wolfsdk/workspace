@@ -1,0 +1,29 @@
+name: Workspace checks
+
+on: pull_request
+
+permissions:
+  contents: read
+
+jobs:
+  workspace:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: '1.4.4'
+      - run: bun run gate
+      - run: bun run --cwd apps/workspace build
+      - name: Exercise a DOCX with the released engine
+        env:
+          WOLF_VERSION: '0.2.25'
+          WOLF_INSTALL_TERMS: community-selfhost
+        run: |
+          export WOLF_INSTALL_DIR="$RUNNER_TEMP/wolf-bin"
+          curl --fail --silent --show-error --location https://wolfsdk.com/install --output "$RUNNER_TEMP/install-wolf.sh"
+          sh "$RUNNER_TEMP/install-wolf.sh"
+          WOLF_ENGINE="$WOLF_INSTALL_DIR/wolf" bun scripts/smoke-docx.ts

@@ -9,6 +9,7 @@ import {
   formatTime,
   formatTyped,
   sideShown,
+  tableCellRegions,
   type Change,
   type DocFormat,
   type Hunk,
@@ -70,8 +71,14 @@ function ChangeRow(props: {
 }) {
   const { store, entry, item, change, regionIds, side } = props;
   const index = item.primary;
-  const addr = side ? addressOnSide(entry, change, side) : null;
-  const notOnPage = side !== null && (addr === null || !regionIds.has(addr));
+  // On page while a region carries the address of the row or of a record folded into it: a deck table
+  // cell edit folds the cell, its paragraph and its run under the paragraph, and only the cell is drawn.
+  const drawn = (c: Change | undefined): boolean => {
+    const addr = side && c ? addressOnSide(entry, c, side) : null;
+    return addr !== null && regionIds.has(addr);
+  };
+  const changes = changesOf(entry);
+  const notOnPage = side !== null && !drawn(change) && !item.indices.some((i) => drawn(changes[i]));
   const sel = store.ui.selectedChange;
   const selected = sel?.revision === entry.revision && item.indices.includes(sel.index);
   const [open, setOpen] = useState(false);
@@ -299,7 +306,9 @@ function Entry(props: { store: ReviewStore; entry: HistoryEntry; current: number
   const expanded = store.ui.expanded.has(entry.revision);
   const inspected = store.inspectedEntry()?.revision === entry.revision;
   const side = sideShown(entry, snap.state);
-  const regionIds = new Set((snap.state?.regions ?? []).map((r) => r.object_id));
+  const regionIds = new Set(
+    snap.state ? [...snap.state.regions, ...tableCellRegions(snap.state)].map((r) => r.object_id) : [],
+  );
   const rev = entry.revision;
   // One op keeps the flat list; several ops group the rows under one block per hunk.
   const hunks = entry.ops.length > 1 ? store.hunks(entry) : null;

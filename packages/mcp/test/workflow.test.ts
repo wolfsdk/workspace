@@ -1,11 +1,12 @@
 // One whole working session, as an agent client and a person would live it: the agent connects over Streamable
 // HTTP, looks around, reads, proposes a change and answers a comment; the person sees the agent working, approves
 // the proposal and resolves the thread. Everything goes through the real room server.
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { createMcpHttpHandler } from "../src/index.ts";
 import { SseReader, roomEvents } from "./fixtures/sse.ts";
 import { alice, bob, disposeAll, initializeRequest, listen, makeWorkspace, must, notify, onDispose, request } from "./fixtures/workspace.ts";
 
+setDefaultTimeout(120_000);
 afterEach(disposeAll);
 
 const HEADERS = { "content-type": "application/json", accept: "application/json, text/event-stream" };

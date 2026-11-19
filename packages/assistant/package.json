@@ -1,0 +1,22 @@
+{
+  "name": "@wolfsdk/assistant",
+  "version": "0.1.0",
+  "description": "The assistant of Wolf Workspace: one task against a chat-completions endpoint, working through the eight workspace tools",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@wolfsdk/protocol": "workspace:*"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/wolfsdk/workspace.git",
+    "directory": "packages/assistant"
+  }
+}

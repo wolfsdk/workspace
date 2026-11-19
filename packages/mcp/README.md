@@ -69,6 +69,30 @@ Three optional hooks, all in `src/hooks.ts`:
 
 `engineInspector(pool)` and `engineRenderer(pool)` build the first two from a `WorkerPool` of `@wolfsdk/server`.
 
+Pass `packManifests` (a function returning the `pack.wolf.json` manifests) to show an agent what each pack binding
+reads and writes. `workspace_list` then lists the packs of those manifests, and each entry of `packs` carries
+`definitions`, one per binding:
+
+```json
+{
+  "id": "headline",
+  "kind": "docx_bookmark",
+  "selector": { "type": "defined_name", "name": "Headline" },
+  "source_doc": "fin.xlsx",
+  "source_address": "sheet:Fin/cell:B2",
+  "source_revision": 4,
+  "value": 1250000,
+  "target_doc": "memo.docx",
+  "target_address": "bookmark:Headline"
+}
+```
+
+A defined name or a table is resolved to its cells, and `value` is what the room's head of the source workbook holds
+there (one value for a cell, rows for a range, the first 50 cells with `value_truncated`). Both addresses go straight
+into `doc_read`. A source the room does not hold keeps its address where the selector gives one, and `problem` says
+why the value is missing. `$defs.workspace_list_pack` of `mcp-workspace.v1.schema.json` documents every member.
+Without `packManifests`, `packs` lists the refresher's summaries (pack, binding ids and title).
+
 ## Develop
 
 ```sh

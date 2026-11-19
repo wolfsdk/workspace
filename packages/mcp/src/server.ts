@@ -228,7 +228,7 @@ export class McpSession {
   async #callTool(params: Record<string, unknown>): Promise<unknown> {
     const call = { name: params.name, arguments: params.arguments ?? {} };
     const problems = validateMcpToolCall(call);
-    if (problems.length > 0) throw new RpcError(INVALID_PARAMS, "Invalid params", { problems });
+    if (problems.length > 0) throw new RpcError(INVALID_PARAMS, `Invalid params: ${problems.join("; ")}`, { problems });
     return this.#server.tools.call(this.actor, call as McpWorkspaceCall);
   }
 

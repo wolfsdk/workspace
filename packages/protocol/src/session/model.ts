@@ -1,4 +1,4 @@
-import type { Address, Change, DocState, Region } from "../contract.ts";
+import type { Address, Change, DocState, Region, ViewNode } from "../contract.ts";
 import type { HistoryEntry } from "./history.ts";
 import { decisionDoc, type ChangeType, type Decision, type DecisionDoc } from "./record.ts";
 
@@ -95,13 +95,82 @@ export function boxesOnPage(entry: HistoryEntry, side: Side, regions: Region[]):
 }
 
 /** Whether change `index` of `entry` has an outline on any page of `state`: a region carries its
- * address on the shown side. Null while `state` shows neither side of the entry. */
+ * address on the shown side (an engine region, or a table cell's from `tableCellRegions`). Null
+ * while `state` shows neither side of the entry. */
 export function outlined(entry: HistoryEntry, index: number, state: DocState | null): boolean | null {
   const side = sideShown(entry, state);
   if (!side) return null;
   const change = changesOf(entry)[index];
   const address = change ? addressOnSide(entry, change, side) : null;
-  return address !== null && state!.regions.some((region) => region.object_id === address);
+  const carries = (region: Region): boolean => region.object_id === address;
+  return address !== null && (state!.regions.some(carries) || tableCellRegions(state!).some(carries));
+}
+
+const EMU_PER_PT = 12700;
+
+const cellRegions = new WeakMap<DocState, Region[]>();
+
+/** Regions of the cells of PPTX tables, which the engine draws as one region of the table shape
+ * and none per cell, so that a changed cell is outlined like a changed DOCX cell. A table shape is
+ * a `shape` node with `row` and `col` children whose values are their heights and widths in EMU;
+ * cell `c` of a row is in column `c`. Each cell gets the box the slides editor places it in: the
+ * columns fill the frame (the shape's `geometry`, else its region) and the rows keep their heights
+ * unless they sum to less than the frame. A cell with a region of its own keeps that one. */
+export function tableCellRegions(state: DocState): Region[] {
+  const known = cellRegions.get(state);
+  if (known) return known;
+  const out: Region[] = [];
+  cellRegions.set(state, out);
+  const nodes = new Map(state.nodes.map((n) => [n.id, n]));
+  const kids = (id: Address): ViewNode[] =>
+    (state.childIds[id] ?? []).map((c) => nodes.get(c)).filter((n): n is ViewNode => n !== undefined);
+  const emu = (n: ViewNode): number => {
+    const v = n.value as { number?: unknown } | undefined;
+    return typeof v?.number === "number" ? v.number : 0;
+  };
+  const drawn = new Set(state.regions.map((r) => r.object_id));
+  const seen = new Set<Address>();
+  for (const region of state.regions) {
+    const shape = nodes.get(region.object_id);
+    if (shape?.kind !== "shape" || seen.has(shape.id)) continue;
+    seen.add(shape.id);
+    const children = kids(shape.id);
+    const cols = children.filter((c) => c.kind === "col").map(emu);
+    const rows = children.filter((c) => c.kind === "row");
+    if (cols.length === 0 || rows.length === 0) continue;
+    const g = shape.geometry as { x?: unknown; y?: unknown; cx?: unknown; cy?: unknown } | undefined;
+    const exact = [g?.x, g?.y, g?.cx, g?.cy].every((v) => typeof v === "number");
+    const [x, y, w, h] = exact
+      ? ([g!.x, g!.y, g!.cx, g!.cy] as number[]).map((v) => v / EMU_PER_PT)
+      : region.bbox_pt;
+    const colSum = cols.reduce((a, c) => a + c, 0) / EMU_PER_PT;
+    const rowSum = rows.reduce((a, r) => a + emu(r), 0) / EMU_PER_PT;
+    const sx = colSum > 0 ? w! / colSum : 1;
+    const sy = rowSum > 0 && rowSum < h! ? h! / rowSum : 1;
+    const pxPerPt = region.bbox_pt[2] > 0 ? region.bbox_px[2] / region.bbox_pt[2] : 1;
+    let top = y!;
+    for (const row of rows) {
+      const height = (emu(row) / EMU_PER_PT) * sy;
+      let left = x!;
+      kids(row.id)
+        .filter((c) => c.kind === "cell")
+        .forEach((cell, c) => {
+          const width = ((cols[c] ?? 0) / EMU_PER_PT) * sx;
+          if (!drawn.has(cell.id) && width > 0 && height > 0) {
+            const bbox_pt: [number, number, number, number] = [left, top, width, height];
+            out.push({
+              object_id: cell.id,
+              page: region.page,
+              bbox_pt,
+              bbox_px: bbox_pt.map((v) => v * pxPerPt) as [number, number, number, number],
+            });
+          }
+          left += width;
+        });
+      top += height;
+    }
+  }
+  return out;
 }
 
 /** `[x, y, width, height]` from the page's top-left corner, in one unit (the overlay uses CSS px). */

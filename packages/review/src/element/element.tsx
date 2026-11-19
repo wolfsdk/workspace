@@ -364,19 +364,28 @@ export class WolfReviewElement extends HTMLElement {
    * clock and zone instead of the element's own (`ApplyOptions.at`), so a proposal made at known
    * times reproduces its bytes on a live-clock element. Stops at the first refused batch: the
    * earlier batches stay applied and the refusal fires `wolf-error`. Rejects when `base` does not open.
+   * The last batch applied is then inspected as a click on its row in the changes panel does: its
+   * changes are outlined and the pages scroll to the first of them, so a change on slide 3 of a
+   * deck or on the second sheet of a workbook is in view when the review opens.
    */
   async openReview(input: WolfReviewInput): Promise<WolfReviewOpenResult> {
     this.#require();
     const bytes = input.base instanceof Uint8Array ? input.base : new Uint8Array(await input.base.arrayBuffer());
     await this.#require().ui.open(bytes, input.name);
     const { ui } = this.#require();
+    let refused: WolfReviewOpenResult["refused"] = null;
     for (const [index, batch] of input.batches.entries()) {
       const { ops, label, clock, timezone }: WolfReviewBatch = Array.isArray(batch) ? { ops: batch } : batch;
       const at = clock !== undefined || timezone !== undefined ? { clock, timezone } : undefined;
       const result = await ui.apply(ops, { source: "proposal", label: label ?? `Proposed change ${index + 1}`, at });
-      if (!result.ok) return { applied: index, refused: { index, error: result.error } };
+      if (!result.ok) {
+        refused = { index, error: result.error };
+        break;
+      }
     }
-    return { applied: input.batches.length, refused: null };
+    const shown = ui.getSnapshot().history.at(-1);
+    if (shown) await reviewStore(ui).inspect(shown);
+    return { applied: refused?.index ?? input.batches.length, refused };
   }
 
   /** Apply one room `agent.activity` event to the presence bar (`idle` removes the agent); fires `wolf-review-agent-activity`. */

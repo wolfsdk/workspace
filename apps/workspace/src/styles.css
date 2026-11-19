@@ -62,6 +62,7 @@
 
   --rail-left: 272px;
   --rail-right: 352px;
+  --rail-assistant: 320px;
   --topbar-h: 48px;
 
   color-scheme: light;
@@ -186,6 +187,27 @@ kbd {
 
 .app.no-left.no-right {
   grid-template-columns: 0 minmax(0, 1fr) 0;
+}
+
+/* With an assistant on the server, its panel takes a column between the document and the right rail. */
+.app.has-assistant {
+  grid-template-columns: var(--rail-left) minmax(0, 1fr) var(--rail-assistant) var(--rail-right);
+  grid-template-areas:
+    "top top top top"
+    "notice notice notice notice"
+    "left stage assistant right";
+}
+
+.app.has-assistant.no-left {
+  grid-template-columns: 0 minmax(0, 1fr) var(--rail-assistant) var(--rail-right);
+}
+
+.app.has-assistant.no-right {
+  grid-template-columns: var(--rail-left) minmax(0, 1fr) var(--rail-assistant) 0;
+}
+
+.app.has-assistant.no-left.no-right {
+  grid-template-columns: 0 minmax(0, 1fr) var(--rail-assistant) 0;
 }
 
 .topbar {
@@ -330,6 +352,8 @@ kbd {
   font-weight: 550;
   white-space: nowrap;
   cursor: pointer;
+  /* A link styled as a button (the top bar's "Connect an agent" and "Plan") carries no underline. */
+  text-decoration: none;
   transition:
     background var(--we-duration) var(--we-ease),
     border-color var(--we-duration) var(--we-ease);
@@ -839,6 +863,11 @@ textarea.input {
   border-left: 1px solid var(--we-border);
 }
 
+.rail--assistant {
+  grid-area: assistant;
+  border-left: 1px solid var(--we-border);
+}
+
 .no-left .rail--left,
 .no-right .rail--right {
   display: none;
@@ -1270,6 +1299,146 @@ textarea.input {
   color: var(--we-muted);
 }
 
+/* ---- Assistant --------------------------------------------------------- */
+
+.assistant-meter {
+  font-size: var(--we-text-xs);
+  color: var(--we-muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.assistant-model {
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--we-font-mono);
+  font-size: var(--we-text-xs);
+  color: var(--we-muted);
+}
+
+.assistant-log {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--we-space-4);
+}
+
+.assistant-turns {
+  display: grid;
+  gap: var(--we-space-5);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.assistant-turn {
+  display: grid;
+  gap: var(--we-space-3);
+  min-width: 0;
+}
+
+.assistant-request {
+  justify-self: end;
+  max-width: 92%;
+  padding: var(--we-space-3) var(--we-space-4);
+  border-radius: var(--we-radius-lg);
+  background: var(--we-selected);
+}
+
+.assistant-request-text,
+.assistant-answer {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.assistant-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--we-space-3);
+  margin: var(--we-space-2) 0 0;
+  font-size: var(--we-text-xs);
+  color: var(--we-muted);
+  overflow-wrap: anywhere;
+}
+
+.assistant-meta .time {
+  font-size: inherit;
+}
+
+.assistant-steps {
+  display: grid;
+  gap: var(--we-space-2);
+  margin: 0;
+  padding: 0 0 0 var(--we-space-4);
+  border-left: 2px solid var(--we-divider);
+  list-style: none;
+  font-size: var(--we-text-sm);
+}
+
+.assistant-step {
+  display: grid;
+  gap: var(--we-space-1);
+  min-width: 0;
+}
+
+.assistant-step-head {
+  display: flex;
+  align-items: center;
+  gap: var(--we-space-3);
+  min-width: 0;
+}
+
+.assistant-step-doc {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--we-fg-2);
+}
+
+.assistant-step-head .status {
+  margin-left: auto;
+}
+
+.assistant-step-summary {
+  color: var(--we-muted);
+  overflow-wrap: anywhere;
+}
+
+.assistant-outcome {
+  display: flex;
+  margin: 0;
+}
+
+.assistant-failure {
+  margin: 0;
+  color: var(--we-danger);
+  font-size: var(--we-text-sm);
+  overflow-wrap: anywhere;
+}
+
+.assistant-foot {
+  display: grid;
+  gap: var(--we-space-3);
+  border-top: 1px solid var(--we-divider);
+  border-bottom: 0;
+}
+
+.assistant-exhausted .time {
+  color: inherit;
+  font-size: inherit;
+}
+
+.assistant-context {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--we-space-2);
+  min-width: 0;
+}
+
 /* ---- Stage ------------------------------------------------------------- */
 
 .stage {
@@ -1611,10 +1780,20 @@ textarea.input {
   border-left-color: var(--we-danger);
 }
 
+/* With the assistant beside it, the document keeps a toolbar's width on a laptop window: the rails give way. */
+@media (min-width: 1101px) and (max-width: 1500px) {
+  .app.has-assistant {
+    --rail-left: 232px;
+    --rail-right: 300px;
+    --rail-assistant: 288px;
+  }
+}
+
 @media (max-width: 1100px) {
   :root {
     --rail-left: 232px;
     --rail-right: 300px;
+    --rail-assistant: 280px;
   }
 
   .search-button {
