@@ -678,41 +678,6 @@ describe("agent activity", () => {
     log.expectValid();
     expect((await snapshotOf(h)).seq).toBe(second?.seq ?? -1);
   });
-
-  test("an edit announced by its agent lands the announcement ahead of its own event, and a refused edit announces nothing", async () => {
-    await seedRoom(h);
-    const before = await snapshotOf(h);
-    const log = await join(before.seq);
-    const announce = { doc_name: DOC, activity: "committing", detail: "1 op" } as const;
-    const request = (mode: EditRequest["mode"], base: number, b: RoomBatch, doc = DOC): EditRequest => ({ doc_name: doc, base_revision: base, mode, batch: b });
-
-    // Refused for every reason the room has, each leaves no event at all.
-    expect(refusalOf(await h.server.edit("room", robot, request("commit", 0, batch({ op: "replace", find: "absent", text: "x" })), { announce })).code).toBe("BAD_REQUEST");
-    expect(refusalOf(await h.server.edit("room", robot, request("propose", 0, batch({ op: "fail", message: "boom" })), { announce })).code).toBe("BAD_REQUEST");
-    expect(refusalOf(await h.server.edit("room", robot, request("commit", 7, append("x")), { announce })).code).toBe("REVISION_MISMATCH");
-    expect(refusalOf(await h.server.edit("room", robot, request("commit", 0, append("x"), "missing.docx"), { announce })).code).toBe("UNKNOWN_DOCUMENT");
-    expect(refusalOf(await h.server.edit("room", robot, request("commit", 0, append("x")), { announce: { ...announce, doc_name: "missing.docx" } })).code).toBe("UNKNOWN_DOCUMENT");
-    // Only an agent announces; a person's edit with an announcement is refused, and a plain edit is as it was.
-    expect(refusalOf(await h.server.edit("room", alice, request("commit", 0, append("x")), { announce })).code).toBe("FORBIDDEN");
-    expect(await snapshotOf(h)).toEqual(before);
-    expect(log.events).toEqual([]);
-
-    const proposal = must(await h.server.edit("room", robot, request("propose", 0, append("p")), { announce: { ...announce, activity: "proposing" } }));
-    expect(proposal).toMatchObject({ mode: "propose", existed: false });
-    const commit = must(await h.server.edit("room", robot, request("commit", 0, append("!")), { announce }));
-    expect(commit.mode).toBe("commit");
-    const types = log.events.map((event) => event.type);
-    expect(types.filter((type) => type === "agent.activity")).toHaveLength(2);
-    expect(types.indexOf("agent.activity")).toBeLessThan(types.indexOf("proposal.updated"));
-    const proposing = log.ofType("agent.activity")[0];
-    const committing = log.ofType("agent.activity")[1];
-    const committedEvent = log.ofType("doc.committed")[0];
-    expect(proposing).toMatchObject({ agent: { id: "robot" }, doc_name: DOC, activity: "proposing" });
-    expect(committing).toMatchObject({ activity: "committing", detail: "1 op" });
-    expect(committedEvent?.seq).toBe((committing?.seq ?? -1) + 1);
-    expect(types.indexOf("doc.committed")).toBe(types.lastIndexOf("agent.activity") + 1);
-    log.expectValid();
-  });
 });
 
 describe("a failed batch commits nothing", () => {

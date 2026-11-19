@@ -1,6 +1,6 @@
 // The HTTP API of `wolfsdk-workspace serve`, from the browser: every call carries the bearer token, or no
 // `Authorization` header at all behind a hosting front, which authenticates the call from its session cookie.
-import type { RoomActor, RoomHead, RoomState } from "@wolfsdk/protocol/workspace";
+import type { RoomActor, RoomHead, RoomState, WorkspaceDocFormat } from "@wolfsdk/protocol/workspace";
 import { decodeDisplayListSnapshot, type Page } from "@wolfsdk/runtime/ws-room";
 
 export type RoomRow = { room_id: string; workspace_id: string; seq: number };
@@ -16,6 +16,34 @@ export type PackStatus = {
   reload?(roomId: string | null): Promise<PackStatus | null>;
 };
 export type PackRefresh = PackStatus & { refreshed: string[] };
+
+/** The documents a guest may reach. A guest reads, comments on and proposes edits to these and nothing else. */
+export type GuestScope = { docs: { room_id: string; doc_name: string }[] };
+
+/** Who the caller is: its actor, and its scope when it is a guest (null for a member, and from a server that predates
+ * guests). */
+export type Me = { actor: RoomActor; guest: GuestScope | null };
+
+/** The live share link of a document, as a member sees it. `path` is the page of the link, `/s/<token>`. */
+export type Share = { token: string; path: string; room_id: string; doc_name: string; created_at: string; created_by: RoomActor };
+
+/** What anyone holding a live link learns of the document: its name and head, who shared it, and where an agent finds
+ * its instructions (`connect`, a path with `?share=<token>`, or null when the server offers none). */
+export type PublicShare = {
+  room_id: string;
+  doc_name: string;
+  format: WorkspaceDocFormat;
+  revision: number;
+  updated_at: string;
+  shared_by: string;
+  connect: string | null;
+};
+
+/** A guest of a shared document, as the hosting front lists them. */
+export type ShareGuest = { id: string; email: string; name: string; added_at: string };
+
+/** The guests of a document and how many it may have. */
+export type ShareGuests = { guests: ShareGuest[]; limit: number };
 
 /** A refused call: the `error.code` and `error.message` of the body, and the HTTP status. */
 export class ApiError extends Error {
@@ -91,8 +119,10 @@ export class WorkspaceApi {
     };
   }
 
-  me(): Promise<{ actor: RoomActor }> {
-    return this.#json("/api/me");
+  /** Who the caller is. `GET /api/me`; a `guest` the server leaves out counts as null. */
+  async me(): Promise<Me> {
+    const body = await this.#json<{ actor: RoomActor; guest?: GuestScope | null }>("/api/me");
+    return { actor: body.actor, guest: body.guest ?? null };
   }
 
   async rooms(): Promise<RoomRow[]> {
@@ -142,5 +172,58 @@ export class WorkspaceApi {
 
   #reloadable<T extends PackStatus>(status: T): T {
     return { ...status, reload: (roomId: string | null) => this.pack(roomId) };
+  }
+
+  #docPath(roomId: string, doc: string): string {
+    return `/api/rooms/${encodeURIComponent(roomId)}/docs/${encodeURIComponent(doc)}`;
+  }
+
+  /** The live share link of a document, or null. `GET /api/rooms/<room>/docs/<doc>/share`, for a member user. */
+  async shareOf(roomId: string, doc: string): Promise<Share | null> {
+    return (await this.#json<{ share: Share | null }>(`${this.#docPath(roomId, doc)}/share`)).share;
+  }
+
+  /** Make the share link of a document, or get the live one. `PUT /api/rooms/<room>/docs/<doc>/share`. */
+  async share(roomId: string, doc: string): Promise<Share> {
+    return (await this.#json<{ share: Share }>(`${this.#docPath(roomId, doc)}/share`, { method: "PUT" })).share;
+  }
+
+  /** End the share link of a document: it stops working for everyone who has it. `DELETE .../share`. */
+  async unshare(roomId: string, doc: string): Promise<void> {
+    await this.#call(`${this.#docPath(roomId, doc)}/share`, { method: "DELETE" });
+  }
+
+  /** What a share link shows. `GET /api/share/<token>` needs no credential; an unknown or ended link throws
+   * `SHARE_NOT_FOUND` with status 404. */
+  publicShare(token: string): Promise<PublicShare> {
+    return this.#json<{ share: PublicShare }>(`/api/share/${encodeURIComponent(token)}`).then((body) => body.share);
+  }
+
+  /** The painted pages of the head a share link shows. `GET /api/share/<token>/snapshot` needs no credential and
+   * answers the body of `snapshot`, or the same 404 as `publicShare`. */
+  async publicSnapshot(token: string): Promise<Page[]> {
+    const response = await this.#call(`/api/share/${encodeURIComponent(token)}/snapshot`);
+    return decodeDisplayListSnapshot(new Uint8Array(await response.arrayBuffer()));
+  }
+
+  /** The guests of a document, from the hosting front: `GET /-/share/guests?room=&doc=`. Null where nothing answers
+   * for them: a front without the route (404), or an answer of another shape (a server's app page). */
+  async shareGuests(roomId: string, doc: string): Promise<ShareGuests | null> {
+    let body: unknown;
+    try {
+      body = await this.#json(`/-/share/guests?${new URLSearchParams({ room: roomId, doc })}`);
+    } catch (e) {
+      if ((e instanceof ApiError && e.status === 404) || e instanceof SyntaxError) return null;
+      throw e;
+    }
+    if (typeof body !== "object" || body === null || !("guests" in body) || !Array.isArray(body.guests)) return null;
+    const limit = "limit" in body && typeof body.limit === "number" ? body.limit : 3;
+    return { guests: body.guests as ShareGuest[], limit };
+  }
+
+  /** Take a guest off a document: their session and agent tokens stop working for it at once.
+   * `DELETE /-/share/guests/<account id>?room=&doc=`. */
+  async removeShareGuest(roomId: string, doc: string, id: string): Promise<void> {
+    await this.#call(`/-/share/guests/${encodeURIComponent(id)}?${new URLSearchParams({ room: roomId, doc })}`, { method: "DELETE" });
   }
 }

@@ -9,12 +9,16 @@
 //                               server per room, named by `?room=` or `X-Wolf-Room`.
 //   *       /api/...            rooms, documents, heads, snapshots, previews, the linked pack and, at `GET /api/export`,
 //                               every document of one workspace as one ZIP archive (see `export.ts`).
+//   GET     /api/share/<token>  the share link of one document: what it is, and (at `/snapshot`) its painted pages,
+//                               for anyone who holds the link, with no token.
 //   GET     /wasm/...           a local engine channel (`latest.txt`, `v<VERSION>/...`), when `wasmDir` is set.
 //   GET     everything else     the compiled workspace UI, with the single-page fallback to `index.html`.
 //
-// Every route but `/api/health`, `/wasm/...` and the UI needs a bearer token: `Authorization: Bearer <token>`,
-// or the `token` query parameter for a browser WebSocket, which cannot set a header. The server derives the
-// actor from the token alone and trusts nothing a client says about itself.
+// Every route but `/api/health`, `/api/share/<token>`, `/wasm/...` and the UI needs a bearer token: `Authorization:
+// Bearer <token>`, or the `token` query parameter for a browser WebSocket, which cannot set a header. The server
+// derives the actor from the token alone and trusts nothing a client says about itself. An actor that `scopeOf`
+// limits to some documents (a guest) sees only those rooms and may not create, upload, export, use the pack or the
+// assistant.
 import { stat } from "node:fs/promises";
 import { basename, extname, resolve, sep } from "node:path";
 import { createMcpHttpHandler, McpServer, type McpHttpHandler, WorkspaceTools, type WorkspaceToolsOptions } from "@wolfsdk/mcp";
@@ -31,6 +35,7 @@ import {
   type WorkspaceDocFormat,
 } from "@wolfsdk/protocol/workspace";
 import {
+  type AccessScope,
   type AssistantConnection,
   assistantConnection,
   AssistantService,
@@ -44,6 +49,10 @@ import {
   type RoomFailure,
   type RoomService,
   type RoomSubscription,
+  scopedService,
+  type ScopeOf,
+  type ShareLink,
+  type ShareLinks,
 } from "@wolfsdk/server";
 import workspacePackage from "../package.json" with { type: "json" };
 import { type PlanReadOnly, planReadOnlyMode } from "./errors.ts";
@@ -111,6 +120,18 @@ export type WorkspaceServerOptions = {
   /** The assistant of the workspace. Without it the assistant is not configured: it says so to a client that
    * asks for its status, refuses a task, and keeps nothing. */
   assistant?: WorkspaceAssistantOptions | null;
+  /** What an actor may reach when it is not a member: its documents and its access, or `null` for a member. The
+   * room `service` applies the same limits to what it serves, so give it `scopedService(rooms, scopeOf)`; this
+   * server uses `scopeOf` for what the service does not decide: which rooms a list shows, and the routes a guest
+   * may not use at all. Without it every actor is a member. */
+  scopeOf?: ScopeOf;
+  /** The share links of the workspace: with them the member routes `.../docs/<doc>/share` and the public routes
+   * `GET /api/share/<token>` work, and without them those routes answer 404. The identity of the viewer of a link,
+   * `SHARE_VIEWER`, must take no seat: have the room server's `seatless` say so. */
+  shares?: ShareLinks;
+  /** The path of the instructions an agent follows to connect to a shared document, such as
+   * `/-/connect/instructions`, which the public metadata of a link offers as `connect`. Must start with `/`. */
+  shareConnect?: string | null;
 };
 
 export type WorkspaceServer = {
@@ -253,11 +274,35 @@ function errorEvent(requestId: string | null, error: RoomFailure): RoomServerEve
 
 const badRequest = (requestId: string | null, message: string): RoomServerEvent => errorEvent(requestId, { code: "BAD_REQUEST", message });
 
+/** The identity of the public routes of a share link: not a member, not a guest, and never the actor of a token.
+ * A room server must give it no seat (compare an actor with `===`). */
+export const SHARE_VIEWER: RoomActor = { kind: "user", id: "share-viewer", name: "Viewer" };
+
+/** What `GET /api/share/<token>` tells anyone who holds the link. */
+export type PublicShare = {
+  room_id: string;
+  doc_name: string;
+  format: WorkspaceDocFormat;
+  revision: number;
+  updated_at: string;
+  /** The display name of the member who made the link. */
+  shared_by: string;
+  /** `<shareConnect>?share=<token>`, or `null` when the server has no `shareConnect`. */
+  connect: string | null;
+};
+
+/** What the member routes of a share link answer: the live link of one document. */
+export type Share = { token: string; path: string; room_id: string; doc_name: string; created_at: string; created_by: RoomActor };
+
+/** A share token: 32 random bytes as base64url without padding. */
+const SHARE_TOKEN = /^[A-Za-z0-9_-]{43}$/;
+
 /** The placeholder actor of a room's MCP server: every session takes the agent its token stands for. */
 const MCP_PLACEHOLDER: RoomActor = { kind: "agent", id: "wolf-workspace-mcp", name: "Wolf Workspace MCP" };
 
 export function startWorkspaceServer(options: WorkspaceServerOptions): WorkspaceServer {
   const { service, authenticate } = options;
+  const scopeOf: ScopeOf = options.scopeOf ?? (() => null);
   const staticDir = options.staticDir ? resolve(options.staticDir) : null;
   const wasmDir = options.wasmDir ? resolve(options.wasmDir) : null;
   /** The MCP server of each room that was asked for, and its HTTP transport. */
@@ -356,6 +401,16 @@ export function startWorkspaceServer(options: WorkspaceServerOptions): Workspace
     }
     if (isAssistantMessage(message)) {
       try {
+        if ((await scopeOf(ws.data.actor)) !== null) {
+          const id = typeof message === "object" && message !== null && "request_id" in message ? message.request_id : null;
+          (ws.data.assistant ??= assistantConnection(ws)).send({
+            type: "assistant.error",
+            request_id: typeof id === "string" && ID.test(id) ? id : null,
+            code: "FORBIDDEN",
+            message: "the assistant works for members of the workspace",
+          });
+          return;
+        }
         await assistant.handle((ws.data.assistant ??= assistantConnection(ws)), message);
       } catch (e) {
         console.error("workspace server: an assistant request failed unexpectedly", e);
@@ -378,12 +433,15 @@ export function startWorkspaceServer(options: WorkspaceServerOptions): Workspace
 
   // --- /mcp ---------------------------------------------------------------------------------------------
 
-  async function mcpRoomOf(request: Request): Promise<string | Response> {
-    const named = new URL(request.url).searchParams.get("room") ?? request.headers.get("x-wolf-room") ?? options.defaultRoom ?? null;
-    const rooms = await service.listRooms();
+  async function mcpRoomOf(request: Request, scope: AccessScope | null): Promise<string | Response> {
+    const reachable = (roomId: string): boolean => scope === null || scope.docs.some((d) => d.room_id === roomId);
+    const configured = options.defaultRoom && reachable(options.defaultRoom) ? options.defaultRoom : null;
+    const named = new URL(request.url).searchParams.get("room") ?? request.headers.get("x-wolf-room") ?? configured;
+    // A room outside the scope of the caller is as unknown as a room that does not exist.
+    const rooms = (await service.listRooms()).filter((r) => reachable(r.room_id));
     if (named !== null) {
       if (!ID.test(named)) return json(400, { jsonrpc: "2.0", id: null, error: { code: -32600, message: `${JSON.stringify(named)} is not a room id` } });
-      if (mcpRooms.has(named) || rooms.some((r) => r.room_id === named)) return named;
+      if ((scope === null && mcpRooms.has(named)) || rooms.some((r) => r.room_id === named)) return named;
       return json(404, { jsonrpc: "2.0", id: null, error: { code: -32600, message: `unknown room ${JSON.stringify(named)}` } });
     }
     if (rooms.length === 1 && rooms[0]) return rooms[0].room_id;
@@ -441,10 +499,11 @@ export function startWorkspaceServer(options: WorkspaceServerOptions): Workspace
 
   async function mcp(request: Request): Promise<Response> {
     // Authenticate before naming the room: an unknown caller learns nothing about which rooms exist.
-    if ((await authenticate(request)) === null) {
+    const actor = await authenticate(request);
+    if (actor === null) {
       return json(401, { jsonrpc: "2.0", id: null, error: { code: -32600, message: "authentication required" } }, { "www-authenticate": "Bearer" });
     }
-    const room = await mcpRoomOf(request);
+    const room = await mcpRoomOf(request, await scopeOf(actor));
     if (room instanceof Response) return room;
     return mcpRoomFor(room).handler.fetch(request);
   }
@@ -522,10 +581,11 @@ export function startWorkspaceServer(options: WorkspaceServerOptions): Workspace
     });
   }
 
-  async function readSnapshot(request: Request, roomId: string, actor: RoomActor, docName: string): Promise<Response> {
+  /** The snapshot of one document, read from `from` as `actor`. */
+  async function readSnapshot(request: Request, roomId: string, actor: RoomActor, docName: string, from: RoomService = service): Promise<Response> {
     const render = options.snapshot;
     if (!render) return problem(501, "NO_SNAPSHOT", "this server renders no snapshots: start it with an engine");
-    const read = await service.readHead(roomId, actor, docName);
+    const read = await from.readHead(roomId, actor, docName);
     if (!read.ok) return failed(read.error);
     const { head, bytes } = read.value;
     const headers = headReceipt(head);
@@ -651,10 +711,73 @@ export function startWorkspaceServer(options: WorkspaceServerOptions): Workspace
     return planned.ok ? exportResponse(planned.value) : failed(planned.error);
   }
 
+  const shareNotFound = (): Response => problem(404, "SHARE_NOT_FOUND", "this link is not shared");
+  const guestRefused = (): Response =>
+    problem(403, "FORBIDDEN", "a guest of a shared document may read it, comment on it and propose edits, and may not do this");
+
+  const shareOf = (link: ShareLink): Share => ({
+    token: link.token,
+    path: `/s/${link.token}`,
+    room_id: link.room_id,
+    doc_name: link.doc_name,
+    created_at: link.created_at,
+    created_by: link.created_by,
+  });
+
+  /** `GET /api/share/<token>` and `GET /api/share/<token>/snapshot`: no credentials. The token names one document and
+   * the read goes through a `view` scope of that document alone, as the viewer, who takes no seat. An unknown token,
+   * an ended one and a document that is gone are one answer. `null` for a request that is not one of these two. */
+  async function publicShare(request: Request, path: string): Promise<Response | null> {
+    const match = /^\/api\/share\/([^/]+)(\/snapshot)?$/.exec(path);
+    if (match === null || request.method !== "GET") return null;
+    const token = match[1] ?? "";
+    const link = options.shares && SHARE_TOKEN.test(token) ? options.shares.resolveShare(token) : null;
+    if (link === null) return shareNotFound();
+    const viewing = scopedService(service, () => ({ access: "view", docs: [{ room_id: link.room_id, doc_name: link.doc_name }] }));
+    if (match[2] !== undefined) {
+      const snapshot = await readSnapshot(request, link.room_id, SHARE_VIEWER, link.doc_name, viewing);
+      return snapshot.status === 404 ? shareNotFound() : snapshot;
+    }
+    const read = await viewing.readHead(link.room_id, SHARE_VIEWER, link.doc_name);
+    if (!read.ok) return read.error.code === "UNKNOWN_ROOM" || read.error.code === "UNKNOWN_DOCUMENT" ? shareNotFound() : failed(read.error);
+    const { head } = read.value;
+    const connect = options.shareConnect ? `${options.shareConnect}?share=${link.token}` : null;
+    const share: PublicShare = {
+      room_id: link.room_id,
+      doc_name: link.doc_name,
+      format: head.format,
+      revision: head.revision,
+      updated_at: head.updated_at,
+      shared_by: link.created_by.name,
+      connect,
+    };
+    return json(200, { share });
+  }
+
+  /** `GET`, `PUT` and `DELETE /api/rooms/<room>/docs/<doc>/share`: the link of a document, for a member who is a user. */
+  async function memberShare(request: Request, roomId: string, docName: string, actor: RoomActor, scope: AccessScope | null): Promise<Response> {
+    if (actor.kind !== "user" || scope !== null) return problem(403, "FORBIDDEN", "only a member of the workspace may share a document");
+    const shares = options.shares;
+    if (!shares) return problem(404, "NOT_FOUND", "this server keeps no share links");
+    const method = request.method;
+    if (method === "GET") return json(200, { share: ((link) => (link === null ? null : shareOf(link)))(shares.shareOf(roomId, docName)) });
+    if (method !== "PUT" && method !== "DELETE") return problem(405, "BAD_REQUEST", "use GET, PUT or DELETE", {}, { allow: "GET, PUT, DELETE" });
+    // Ending a link is never refused: a workspace that has gone read-only can still stop sharing.
+    if (method === "DELETE") {
+      shares.unshare(roomId, docName);
+      return new Response(null, { status: 204, headers: { "cache-control": "no-store" } });
+    }
+    const refused = refusal();
+    if (refused !== null) return failed(refused);
+    const made = await shares.share(roomId, docName, actor);
+    return made.ok ? json(200, { share: shareOf(made.value.link) }) : failed(made.error);
+  }
+
   async function api(request: Request, path: string): Promise<Response> {
     if (path === "/api/health") return json(200, { ok: true });
     const actor = await authenticate(request);
     if (actor === null) return problem(401, "UNAUTHORIZED", "send a known token as Authorization: Bearer <token>", {}, { "www-authenticate": "Bearer" });
+    const scope = await scopeOf(actor);
     const method = request.method;
     const parts = path.split("/").slice(2).map((part) => {
       try {
@@ -666,21 +789,27 @@ export function startWorkspaceServer(options: WorkspaceServerOptions): Workspace
     const [head, roomId, kind, item, leaf] = parts;
     if (head === "me" && parts.length === 1 && method === "GET") {
       const readOnly = readOnlyNow();
-      return json(200, readOnly === null ? { actor } : { actor, readOnly });
+      const guest = scope === null ? null : { docs: scope.docs.map(({ room_id, doc_name }) => ({ room_id, doc_name })) };
+      return json(200, readOnly === null ? { actor, guest } : { actor, guest, readOnly });
     }
+    if (scope !== null && (head === "export" || head === "pack")) return guestRefused();
     if (head === "export" && parts.length === 1) return exportArchive(request, actor);
     if (head === "pack" && parts.length === 1) return pack(request, "check", actor);
     if (head === "pack" && parts.length === 2 && roomId === "refresh") return pack(request, "refresh", actor);
     if (head !== "rooms") return problem(404, "NOT_FOUND", `no route ${method} ${path}`);
     if (parts.length === 1) {
-      if (method === "GET") return json(200, { rooms: await service.listRooms() });
-      if (method === "POST") return createRoom(request, actor);
+      if (method === "GET") {
+        const rooms = await service.listRooms();
+        return json(200, { rooms: scope === null ? rooms : rooms.filter((r) => scope.docs.some((d) => d.room_id === r.room_id)) });
+      }
+      if (method === "POST") return scope === null ? createRoom(request, actor) : guestRefused();
     } else if (roomId !== undefined && ID.test(roomId)) {
       if (parts.length === 2 && method === "GET") {
         const room = await service.getRoom(roomId, actor);
         return room.ok ? json(200, room.value) : failed(room.error);
       }
-      if (kind === "docs" && parts.length === 3 && method === "POST") return addDocument(request, roomId, actor);
+      if (kind === "docs" && parts.length === 3 && method === "POST") return scope === null ? addDocument(request, roomId, actor) : guestRefused();
+      if (kind === "docs" && parts.length === 5 && leaf === "share" && item) return memberShare(request, roomId, item, actor, scope);
       if (kind === "docs" && parts.length === 5 && leaf === "head" && item && (method === "GET" || method === "HEAD")) return readHead(request, roomId, actor, item);
       if (kind === "docs" && parts.length === 5 && leaf === "snapshot" && item && method === "GET") return readSnapshot(request, roomId, actor, item);
       if (kind === "proposals" && parts.length === 5 && leaf === "preview" && item && method === "GET") return readPreview(roomId, actor, item);
@@ -744,6 +873,10 @@ export function startWorkspaceServer(options: WorkspaceServerOptions): Workspace
         return new Response("expected a WebSocket upgrade", { status: 426 });
       }
       if (path === "/mcp") return mcp(request);
+      if (path.startsWith("/api/share/")) {
+        const shared = await publicShare(request, path);
+        if (shared !== null) return shared;
+      }
       if (path === "/api" || path.startsWith("/api/")) return api(request, path);
       if (path === "/wasm" || path.startsWith("/wasm/")) return wasm(request, path);
       return ui(request, path);

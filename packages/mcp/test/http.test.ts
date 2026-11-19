@@ -213,8 +213,8 @@ describe("GET: the event stream", () => {
     await fetch(post(request("tools/call", { name: "doc_edit", arguments: { doc: "brief.docx", base_revision: 0, mode: "commit", ops: [{ op: "append_paragraph", text: "x" }] } }), { "mcp-session-id": id }));
     const frames = await reader.until((f) => roomEvents([f])[0]?.event.activity === "idle");
     const events = roomEvents(frames);
-    expect(events.map((e) => e.event.type)).toEqual(["agent.activity", "doc.committed", "agent.activity"]);
-    expect(events.map((e) => e.event.activity)).toEqual(["committing", undefined, "idle"]);
+    expect(events.map((e) => e.event.type)).toEqual(["doc.committed", "agent.activity", "agent.activity"]);
+    expect(events.map((e) => e.event.activity)).toEqual([undefined, "committing", "idle"]);
     const ids = events.map((e) => Number(e.id));
     expect(ids.every(Number.isInteger)).toBe(true);
     expect(ids).toEqual(events.map((e) => e.event.seq as number));

@@ -64,12 +64,15 @@ workers (default 2). The rooms, the MCP tools (`doc_read` text and markdown view
 |`WS /ws`|`wolfsdk.room.v1`: `room.join`, `doc.edit`, `proposal.decide`, `comment.post`. The same contract and order guarantees as `startWsServer` of `@wolfsdk/server`. The same connection carries `wolfsdk.assistant.v1` (`assistant.status`, `assistant.ask`, `assistant.cancel`, `assistant.history`): see [The assistant](#the-assistant).|
 |`POST`, `GET`, `DELETE /mcp`|MCP over Streamable HTTP, for agents only. The room is `?room=<id>` or `X-Wolf-Room`, else `--default-room`, else the only room.|
 |`GET /api/health`|`{ "ok": true }`, without a token.|
-|`GET /api/me`|`{ "actor": ... }` of the token, and `"readOnly": { "reason", "upgrade" }` beside it when the workspace is read-only.|
+|`GET /api/me`|`{ "actor": ..., "guest": null }` of the token (`"guest": { "docs": [{ "room_id", "doc_name" }] }` for a guest), and `"readOnly": { "reason", "upgrade" }` beside it when the workspace is read-only.|
 |`GET`, `POST /api/rooms`|`{ "rooms": [...] }`; `POST { "room_id", "workspace_id"? }` creates a room (201).|
 |`GET /api/rooms/<room>`|The full room state.|
 |`POST /api/rooms/<room>/docs`|Add a document: the raw bytes with `?name=<file>` (and `?format=` when the extension does not say it), or `multipart/form-data` with a `file` field.|
 |`GET /api/rooms/<room>/docs/<doc>/head`|The head bytes, with `ETag: "sha256:<hex>"`, `X-Wolf-Revision` and `X-Wolf-Sha256`. `If-None-Match` answers 304.|
 |`GET /api/rooms/<room>/proposals/<id>/preview`|The preview bytes of a proposal, with `X-Wolf-Sha256`.|
+|`GET`, `PUT`, `DELETE /api/rooms/<room>/docs/<doc>/share`|The share link of a document, for a member who is a user: `200 { "share": { token, path, room_id, doc_name, created_at, created_by } \| null }`, `PUT` makes the link or answers the live one, `DELETE` ends it (204). An agent or a guest gets 403.|
+|`GET /api/share/<token>`|No token needed. `200 { "share": { room_id, doc_name, format, revision, updated_at, shared_by, connect } }`, where `connect` is `<--share-connect>?share=<token>` or `null`; an unknown or ended token is `404 { "error": { "code": "SHARE_NOT_FOUND" } }`.|
+|`GET /api/share/<token>/snapshot`|No token needed. The painted pages of the shared document at its head: the answer of `.../docs/<doc>/snapshot` (same ETag and 304), or the same 404.|
 |`GET /api/export`|Every document of every room, at its head, as one ZIP archive (`application/zip`, `Content-Disposition: attachment`). See [Export](#export).|
 |`GET /api/pack`, `POST /api/pack/refresh`|Check or refresh the pack of `--pack <dir>` on disk; `404 { "error": { "code": "NO_PACK" } }` without one.|
 |`GET /wasm/*`|A local engine channel (`latest.txt`, `v<VERSION>/wolf_web.wasm`, fonts) from `--wasm-dir`, with CORS.|
@@ -122,6 +125,15 @@ it stands for. [`actors add`](#actors) writes it; this is what it holds:
 ```
 
 An agent entry with `"operator"` acts on that user's seat rather than taking a seat of its own.
+
+Any entry may also carry `"guest": { "docs": [{ "room": "<room id>", "doc": "<document name>" }] }`
+(1 to 50 documents). That user or agent is a guest: it sees only those rooms, reads, comments
+and proposes on those documents, takes no seat, and is refused committing, deciding a
+proposal, creating a room, uploading, `/api/export`, `/api/pack*` and the assistant. An agent
+entry with no `guest` whose operator is a guest user of the file has that user's documents.
+With `--share-connect <path>`, the public page of a share link names `<path>?share=<token>` as
+the place an agent finds how to connect.
+
 A client sends the token as `Authorization: Bearer <token>`, or as the `token` query
 parameter when it is a browser (a browser WebSocket cannot set a header). A request without a
 known token is refused with 401; the server derives the actor from the token and trusts

@@ -42,7 +42,6 @@ import type {
   DecideRequest,
   DocumentRead,
   EditOutcome,
-  EditOptions,
   EditRequest,
   PlanCap,
   PlanLimitReason,
@@ -54,6 +53,8 @@ import type {
   RoomListener,
   RoomService,
   RoomSubscription,
+  ShareLink,
+  ShareLinks,
 } from "./service.ts";
 import { claimDatabase, type RoomRow, RoomStore, type SeatRow } from "./store.ts";
 
@@ -94,6 +95,11 @@ export type RoomServerOptions = {
    * The cap is fixed for the life of the server: a new plan takes effect when the server is started again. Absent: only
    * the licence limits. */
   planCap?: PlanCap;
+  /** Whether an identity is seatless: it never takes a seat, counts toward no cap and is never refused because a cap
+   * is reached. An agent whose operator (per `operatorOf`) is seatless takes none either. A seat the identity held
+   * before it became seatless is freed the next time it makes a request. Asked on every request of the identity.
+   * Absent: nobody is seatless. */
+  seatless?: (actor: RoomActor) => boolean | Promise<boolean>;
   /** Serve reads and refuse every write, with the words that say why and what to do about it: `reason` (a sentence)
    * and `upgrade` (the way out, a URL for instance). A write (a workspace or document created, an edit or a
    * proposal, a decision, a comment, an agent's activity report) is refused with a `LICENSE_LIMIT` whose reason is
@@ -107,8 +113,6 @@ export type RoomServerOptions = {
 
 type Failure = { ok: false; error: RoomFailure };
 type SeqEvent = Exclude<RoomServerEvent, { type: "error" }>;
-/** The `agent.activity` an edit lands ahead of its own events, built once the edit is accepted and given its `seq`. */
-type Announcement = (seq: number) => SeqEvent;
 /** What landing a batch does to another open proposal of the document: the proposal as it is after, and for one an
  * approval closes, the note that tells its author why (a comment thread anchored at `proposal:<id>`). */
 type Verdict = { proposal: RoomProposal; note: { author: RoomActor; body: string } | null };
@@ -135,7 +139,7 @@ const OPERATOR_RECHECK_MS = 60_000;
 const LICENCE_RECHECK_MS = 60_000;
 
 /** A subscription and the identity that joined. */
-type Subscriber = { listener: RoomListener; kind: SeatRow["kind"]; id: string; name: string };
+type Subscriber = { listener: RoomListener; kind: SeatRow["kind"]; id: string; name: string; seatless: boolean };
 
 /** A limit of the licence: a whole number, or `null` for no limit. */
 const isLimit = (value: unknown): value is number | null => value === null || (typeof value === "number" && Number.isInteger(value) && value >= 0);
@@ -223,7 +227,7 @@ class Tx {
   }
 }
 
-export class RoomServer implements RoomService {
+export class RoomServer implements RoomService, ShareLinks {
   private readonly store: RoomStore;
   private readonly blobs: BlobStore;
   private readonly engine: DocumentEngine;
@@ -245,6 +249,7 @@ export class RoomServer implements RoomService {
   /** When the licence was last read, on the wall clock: the room clock stamps events and need not move. */
   private licenceReadAt: number | null = null;
   private readonly planCap: Required<PlanCap> | null;
+  private readonly seatlessOf: RoomServerOptions["seatless"];
   private readonly readOnly: ReadOnlyMode | null;
   private readonly unlock: () => void;
 
@@ -271,6 +276,7 @@ export class RoomServer implements RoomService {
     this.seed = options.seed ?? randomSeed;
     this.operatorOf = options.operatorOf;
     this.planCap = options.planCap === undefined ? null : checkedCap(options.planCap);
+    this.seatlessOf = options.seatless;
     this.readOnly = readOnly;
     try {
       for (const row of this.store.rooms()) this.snapshotOf(row.room_id);
@@ -350,8 +356,11 @@ export class RoomServer implements RoomService {
         }
         return failure("LICENSE_LIMIT", `this licence serves ${plural}; ${workspaceId} would be one more`);
       }
-      const seat = await this.admitSeat(await this.seatHolder(actor), actor);
-      if (seat) return seat;
+      const holder = await this.seatHolder(actor);
+      if (!(await this.seatless(actor, holder))) {
+        const seat = await this.admitSeat(holder, actor);
+        if (seat) return seat;
+      }
       this.store.transaction(() => {
         this.store.insertRoom(roomId, workspaceId, this.stamp());
         this.snapshotOf(roomId);
@@ -366,6 +375,37 @@ export class RoomServer implements RoomService {
 
   getRoom(roomId: string, actor: RoomActor): Promise<Result<RoomState>> {
     return this.guarded(actor, "read", roomId, () => ok(this.snapshotOf(roomId)));
+  }
+
+  // Share links ------------------------------------------------------------------------------------------
+
+  shareOf(roomId: string, docName: string): ShareLink | null {
+    return this.store.shareOf(roomId, docName);
+  }
+
+  /** Nothing here awaits, so the link a document has and the link made for it are never read apart: two callers
+   * that share one document together get the same link. */
+  share(roomId: string, docName: string, by: RoomActor): Promise<Result<{ link: ShareLink; existed: boolean }>> {
+    const readOnly = this.readOnlyRefusal();
+    if (readOnly !== null) return Promise.resolve(readOnly);
+    const problem = this.actorProblem(by);
+    if (problem) return Promise.resolve(problem);
+    if (this.store.room(roomId) === null) return Promise.resolve(failure("UNKNOWN_ROOM", `no room ${roomId}`));
+    if (this.store.document(roomId, docName) === null) return Promise.resolve(failure("UNKNOWN_DOCUMENT", `no document ${docName} in ${roomId}`));
+    const live = this.store.shareOf(roomId, docName);
+    if (live !== null) return Promise.resolve(ok({ link: live, existed: true }));
+    const token = Buffer.from(crypto.getRandomValues(new Uint8Array(32))).toString("base64url");
+    const link: ShareLink = { token, room_id: roomId, doc_name: docName, created_by: by, created_at: this.stamp() };
+    this.store.addShare(link);
+    return Promise.resolve(ok({ link, existed: false }));
+  }
+
+  unshare(roomId: string, docName: string): boolean {
+    return this.store.removeShare(roomId, docName);
+  }
+
+  resolveShare(token: string): ShareLink | null {
+    return this.store.shareByToken(token);
   }
 
   // Documents --------------------------------------------------------------------------------------------
@@ -422,30 +462,20 @@ export class RoomServer implements RoomService {
 
   // Edits ------------------------------------------------------------------------------------------------
 
-  edit(roomId: string, actor: RoomActor, request: EditRequest, options?: EditOptions): Promise<Result<RoomEditOutcome>> {
+  edit(roomId: string, actor: RoomActor, request: EditRequest): Promise<Result<RoomEditOutcome>> {
     const readOnly = this.readOnlyRefusal();
     if (readOnly !== null) return Promise.resolve(readOnly);
     const problems = validateRoomClientMessage({ type: "doc.edit", request_id: "service", ...request });
     if (problems.length > 0) return Promise.resolve(badRequest(problems));
-    const announce = options?.announce;
-    if (announce !== undefined) {
-      if (actor.kind !== "agent") return Promise.resolve(failure("FORBIDDEN", "only an agent reports agent activity"));
-      const invalid = validateRoomEvent(this.activityEvent(actor, announce, 1, "1970-01-01T00:00:00.000Z"));
-      if (invalid.length > 0) return Promise.resolve(badRequest(invalid));
-    }
     return this.guarded(actor, "edit", roomId, () =>
       this.locks.run(docKey(roomId, request.doc_name), async (): Promise<Result<RoomEditOutcome>> => {
         const document = this.store.document(roomId, request.doc_name);
         if (document === null) return failure("UNKNOWN_DOCUMENT", `no document ${request.doc_name} in ${roomId}`);
         if (document.head.format === "pdf") return failure("BAD_REQUEST", `${request.doc_name} is a PDF; PDF documents are read-only`);
         if (request.base_revision !== document.head.revision) return this.mismatch(request, document.head);
-        if (announce !== undefined && announce.doc_name !== null && this.store.document(roomId, announce.doc_name) === null) {
-          return failure("UNKNOWN_DOCUMENT", `no document ${announce.doc_name} in ${roomId}`);
-        }
-        const announcement = announce === undefined ? null : (seq: number): SeqEvent => this.activityEvent(actor, announce, seq);
         return request.mode === "commit"
-          ? this.commit(roomId, actor, document, request.batch, announcement)
-          : this.propose(roomId, actor, document, request.batch, announcement);
+          ? this.commit(roomId, actor, document, request.batch)
+          : this.propose(roomId, actor, document, request.batch);
       }),
     );
   }
@@ -463,17 +493,16 @@ export class RoomServer implements RoomService {
   }
 
   /** Apply `batch` to the head and record it. The caller holds the document lock. */
-  private async commit(roomId: string, actor: RoomActor, document: RoomDocument, requested: RoomBatch, announcement: Announcement | null): Promise<Result<RoomEditOutcome>> {
+  private async commit(roomId: string, actor: RoomActor, document: RoomDocument, requested: RoomBatch): Promise<Result<RoomEditOutcome>> {
     const { head } = document;
     const batch = this.pin(requested);
     const replay = await this.replayOnHead(head, [batch], true);
     if (!replay.ok) return replay;
     await this.blobs.put(replay.value.bytes);
     const verdicts = await this.reevaluate(roomId, head, replay.value.bytes);
-    const result = this.mutate(roomId, (tx) => {
-      if (announcement !== null) tx.send(announcement(tx.next()));
-      return this.landCommits(tx, roomId, document, replay.value, [batch], actor, null, verdicts);
-    });
+    const result = this.mutate(roomId, (tx) =>
+      this.landCommits(tx, roomId, document, replay.value, [batch], actor, null, verdicts),
+    );
     const [entry] = result.entries;
     if (entry === undefined) throw new Error("a commit produced no session entry");
     return ok({ mode: "commit", head: result.head, entry });
@@ -483,15 +512,12 @@ export class RoomServer implements RoomService {
    * proposal of the document is already open on the head with the same ops (whoever wrote it, whatever its label
    * and pins), that proposal is the answer, with `existed: true`: no engine work, nothing stored or announced. The
    * caller holds the document lock, so two equal proposals racing open one. */
-  private async propose(roomId: string, actor: RoomActor, document: RoomDocument, requested: RoomBatch, announcement: Announcement | null): Promise<Result<RoomEditOutcome>> {
+  private async propose(roomId: string, actor: RoomActor, document: RoomDocument, requested: RoomBatch): Promise<Result<RoomEditOutcome>> {
     const { head } = document;
     const open = this.store
       .openProposals(roomId, head.name)
       .find((proposal) => proposal.base_revision === head.revision && proposal.batches.length === 1 && sameJson(proposal.batches[0]?.ops, requested.ops));
-    if (open !== undefined) {
-      if (announcement !== null) this.mutate(roomId, (tx) => tx.send(announcement(tx.next())));
-      return ok({ mode: "propose", proposal: open, existed: true });
-    }
+    if (open !== undefined) return ok({ mode: "propose", proposal: open, existed: true });
     const batch = this.pin(requested);
     const replay = await this.replayOnHead(head, [batch], false);
     if (!replay.ok) return replay;
@@ -507,7 +533,6 @@ export class RoomServer implements RoomService {
       created_at: this.stamp(),
     };
     this.mutate(roomId, (tx) => {
-      if (announcement !== null) tx.send(announcement(tx.next()));
       this.store.insertProposal(roomId, proposal);
       tx.send({ type: "proposal.updated", seq: tx.next(), proposal });
     });
@@ -788,23 +813,20 @@ export class RoomServer implements RoomService {
       if (report.doc_name !== null && this.store.document(roomId, report.doc_name) === null) {
         return failure("UNKNOWN_DOCUMENT", `no document ${report.doc_name} in ${roomId}`);
       }
-      const problems = validateRoomEvent(this.activityEvent(agent, report, 1));
+      const event = (seq: number): SeqEvent => ({
+        type: "agent.activity",
+        seq,
+        agent: { id: agent.id, name: agent.name },
+        doc_name: report.doc_name,
+        activity: report.activity,
+        ...(report.detail === undefined ? {} : { detail: report.detail }),
+        at: this.stamp(),
+      });
+      const problems = validateRoomEvent(event(1));
       if (problems.length > 0) return badRequest(problems);
-      this.mutate(roomId, (tx) => tx.send(this.activityEvent(agent, report, tx.next())));
+      this.mutate(roomId, (tx) => tx.send(event(tx.next())));
       return ok(undefined);
     });
-  }
-
-  private activityEvent(agent: RoomActor, report: ActivityReport, seq: number, at: string = this.stamp()): SeqEvent {
-    return {
-      type: "agent.activity",
-      seq,
-      agent: { id: agent.id, name: agent.name },
-      doc_name: report.doc_name,
-      activity: report.activity,
-      ...(report.detail === undefined ? {} : { detail: report.detail }),
-      at,
-    };
   }
 
   // Subscriptions ----------------------------------------------------------------------------------------
@@ -812,7 +834,7 @@ export class RoomServer implements RoomService {
   join(roomId: string, actor: RoomActor, sinceSeq: number | null, listener: RoomListener): Promise<Result<RoomSubscription>> {
     const problems = validateRoomClientMessage({ type: "room.join", request_id: "service", room_id: roomId, since_seq: sinceSeq });
     if (problems.length > 0) return Promise.resolve(badRequest(problems));
-    return this.guarded(actor, "join", roomId, () => {
+    return this.guarded(actor, "join", roomId, (seatless) => {
       // Nothing below awaits: the backlog and the registration happen between two events, never across one.
       // A stored room that cannot produce its backlog is damaged: that is thrown to the caller, not hidden
       // behind a subscription that never delivers anything.
@@ -829,7 +851,7 @@ export class RoomServer implements RoomService {
         this.listeners.set(roomId, subscribers);
       }
       const registered = subscribers;
-      const subscriber: Subscriber = { listener, kind: actor.kind, id: actor.id, name: actor.name };
+      const subscriber: Subscriber = { listener, kind: actor.kind, id: actor.id, name: actor.name, seatless };
       registered.add(subscriber);
       return ok({
         unsubscribe() {
@@ -887,6 +909,7 @@ export class RoomServer implements RoomService {
   /** Whether the identity of a subscription still has a seat: its own, or for an agent that acted on its
    * operator's seat, that one. An agent that is handing its own seat to its operator has one all the way. */
   private seated(subscriber: Subscriber): boolean {
+    if (subscriber.seatless) return true;
     if (this.store.hasSeat(subscriber.kind, subscriber.id)) return true;
     const operator = subscriber.kind === "agent" ? this.operators.get(subscriber.id) : undefined;
     return operator !== undefined && this.store.hasSeat("user", operator);
@@ -1095,9 +1118,34 @@ export class RoomServer implements RoomService {
     }
   }
 
+  /** Whether `actor` or the identity whose seat it acts on is seatless. Such a caller holds no seat and counts
+   * toward no cap: a seat it held before it became seatless is freed here, and the subscriptions that went by it
+   * end, except those of seatless identities, which never needed one. `holder` is the result of `seatHolder`. */
+  private async seatless(actor: RoomActor, holder: RoomActor): Promise<boolean> {
+    const isSeatless = this.seatlessOf;
+    if (isSeatless === undefined) return false;
+    const own = await isSeatless(actor);
+    const operator = holder === actor ? own : await isSeatless(holder);
+    if (!own && !operator) return false;
+    let freed = false;
+    if (own) {
+      if (actor.kind === "agent") this.standaloneAt.delete(actor.id);
+      freed = this.store.removeSeat(actor.kind, actor.id);
+    }
+    if (operator && holder !== actor) freed = this.store.removeSeat(holder.kind, holder.id) || freed;
+    if (actor.kind === "agent") this.operators.delete(actor.id);
+    if (freed) this.endUnseated();
+    return true;
+  }
+
   /** Run `work` for `actor` in an existing room: the room exists, the actor may act, the licence was read not
-   * long ago, and an identity that takes a seat has one. */
-  private async guarded<T>(actor: RoomActor, action: RoomAction, roomId: string, work: () => Promise<Result<T>> | Result<T>): Promise<Result<T>> {
+   * long ago, and an identity that takes a seat has one. `work` is told whether the caller is seatless. */
+  private async guarded<T>(
+    actor: RoomActor,
+    action: RoomAction,
+    roomId: string,
+    work: (seatless: boolean) => Promise<Result<T>> | Result<T>,
+  ): Promise<Result<T>> {
     if (this.store.room(roomId) === null) return failure("UNKNOWN_ROOM", `no room ${roomId}`);
     const problem = this.actorProblem(actor);
     if (problem) return problem;
@@ -1109,12 +1157,13 @@ export class RoomServer implements RoomService {
       if (refused) return refused;
     }
     const holder = await this.seatHolder(actor);
+    if (await this.seatless(actor, holder)) return work(true);
     const vacates = holder !== actor && this.store.hasSeat(actor.kind, actor.id);
     if (vacates || !this.store.hasSeat(holder.kind, holder.id)) {
       const refused = await this.locks.run(ADMIN, () => this.admitSeat(holder, actor));
       if (refused) return refused;
     } else this.follow(actor, holder);
-    return work();
+    return work(false);
   }
 
   /** `guarded`, for a room that does not exist yet: the authorize hook and the licence still apply, and the

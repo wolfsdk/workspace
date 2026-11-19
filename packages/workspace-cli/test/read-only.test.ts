@@ -143,7 +143,7 @@ async function connect(token = "t-alice"): Promise<{ ws: WebSocket; events: Room
 describe("over HTTP", () => {
   test("GET /api/me says the workspace is read-only, with the reason and the upgrade path", async () => {
     await seeded(MODE);
-    expect(await (await call("/api/me", { headers: auth() })).json()).toEqual({ actor: ALICE, readOnly: { reason: MODE.reason, upgrade: MODE.upgrade } });
+    expect(await (await call("/api/me", { headers: auth() })).json()).toEqual({ actor: ALICE, guest: null, readOnly: { reason: MODE.reason, upgrade: MODE.upgrade } });
     expect((await call("/api/me")).status).toBe(401);
   });
 
@@ -323,7 +323,7 @@ describe("over the MCP endpoint", () => {
 describe("without the mode", () => {
   test("GET /api/me reports only the actor and every write is served", async () => {
     await seeded();
-    expect(await (await call("/api/me", { headers: auth() })).json()).toEqual({ actor: ALICE });
+    expect(await (await call("/api/me", { headers: auth() })).json()).toEqual({ actor: ALICE, guest: null });
     expect((await postJson("/api/rooms", { room_id: "r2", workspace_id: "ws" })).status).toBe(201);
     expect((await call("/api/rooms/r2/docs?name=second.docx", { method: "POST", headers: auth(), body: word(["two"]) })).status).toBe(201);
   });
@@ -371,6 +371,7 @@ describe("the plan record of serve --plan-record", () => {
     expect(await refused.json()).toEqual({ error: { code: "LICENSE_LIMIT", message: PLAN_MESSAGE } });
     expect(await (await call("/api/me", { headers: auth() })).json()).toEqual({
       actor: ALICE,
+      guest: null,
       readOnly: { reason: "The trial ended on 2026-11-28.", upgrade: "To keep editing, pay at https://cloud.example.test/pay." },
     });
     // A record caught half written keeps the mark in force, and is reported once.
@@ -380,6 +381,6 @@ describe("the plan record of serve --plan-record", () => {
     expect(lines).toEqual([expect.stringContaining("keeping the mark read before (read-only, trial-ended)")]);
     await replace(path, { readOnly: null });
     expect((await postJson("/api/rooms", { room_id: "r3", workspace_id: "ws" })).status).toBe(201);
-    expect(await (await call("/api/me", { headers: auth() })).json()).toEqual({ actor: ALICE });
+    expect(await (await call("/api/me", { headers: auth() })).json()).toEqual({ actor: ALICE, guest: null });
   });
 });

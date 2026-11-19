@@ -1,5 +1,6 @@
 // Room values for the tests, small and valid against `wolfsdk.room.v1`.
 import type { RoomActor, RoomHead, RoomPinnedBatch, RoomProposal, RoomServerEvent, RoomSessionEntry, RoomState, RoomThread } from "@wolfsdk/protocol/workspace";
+import type { PublicShare, Share } from "../src/lib/api.ts";
 import type { HostedSession, PageIo } from "../src/lib/session.ts";
 
 export const ALICE: RoomActor = { kind: "user", id: "alice", name: "Alice Chen" };
@@ -156,4 +157,34 @@ export function fakePage(respond: (request: SeenRequest) => Response | Promise<R
     },
   };
   return { io, requests, visited };
+}
+
+/** A share token in the shape the server makes them: 43 characters of base64url. A made-up value, not a secret. */
+export const SHARE_TOKEN = "share-token-".padEnd(43, "x");
+
+/** The live link of memo.docx in q3-close, as a member sees it. */
+export function shareLink(over: Partial<Share> = {}): Share {
+  return {
+    token: SHARE_TOKEN,
+    path: `/s/${SHARE_TOKEN}`,
+    room_id: "q3-close",
+    doc_name: "memo.docx",
+    created_at: "2026-11-18T19:05:00Z",
+    created_by: ALICE,
+    ...over,
+  };
+}
+
+/** What `GET /api/share/<token>` answers for that link on a server started with `--share-connect`. */
+export function publicShare(over: Partial<PublicShare> = {}): PublicShare {
+  return {
+    room_id: "q3-close",
+    doc_name: "memo.docx",
+    format: "docx",
+    revision: 3,
+    updated_at: "2026-11-18T19:00:00Z",
+    shared_by: "Alice Chen",
+    connect: `/-/connect/instructions?share=${SHARE_TOKEN}`,
+    ...over,
+  };
 }

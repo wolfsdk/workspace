@@ -19,11 +19,23 @@ import {
   type RefreshReport,
 } from "@wolfsdk/packs";
 import type { ReactorPipeCommand, ReactorPipeRequest, ReactorPipeResponse } from "@wolfsdk/protocol/workspace";
-import { EngineFault, EngineRefusal, type EngineWorker, isRoomDatabase, type PlanCap, PoolEngine, type ReadOnlyMode, RoomServer, RoomStore, WorkerPool } from "@wolfsdk/server";
+import {
+  EngineFault,
+  EngineRefusal,
+  type EngineWorker,
+  isRoomDatabase,
+  type PlanCap,
+  PoolEngine,
+  type ReadOnlyMode,
+  RoomServer,
+  RoomStore,
+  scopedService,
+  WorkerPool,
+} from "@wolfsdk/server";
 import { addActor, watchActorDirectory } from "./actors.ts";
 import { type BackupEnv, runBackup, runRestore } from "./backup.ts";
 import { type PlanReadOnly, planReadOnlyMode, UsageError } from "./errors.ts";
-import { type SnapshotInput, startWorkspaceServer, tokenOf, type WorkspaceAssistantOptions, type WorkspaceServer } from "./http.ts";
+import { type SnapshotInput, SHARE_VIEWER, startWorkspaceServer, tokenOf, type WorkspaceAssistantOptions, type WorkspaceServer } from "./http.ts";
 
 export const EXIT_FRESH = 0;
 export const EXIT_STALE = 1;
@@ -39,7 +51,7 @@ const USAGE = `wolfsdk-workspace: check and refresh packs, serve the workspace, 
   wolfsdk-workspace refresh [<pack dir>] [--engine <wolf>] [--json]
   wolfsdk-workspace serve   --db <file> --blobs <dir> --engine <wolf> --actors <file>
                             [--port <n>] [--host <name>] [--pool <n>] [--static-dir <dir>]
-                            [--wasm-dir <dir>] [--pack <dir>] [--default-room <id>] [--workspace-id <id>]
+                            [--wasm-dir <dir>] [--pack <dir>] [--default-room <id>] [--workspace-id <id>] [--share-connect <path>]
                             [--plan-seats <n|unlimited> --plan-workspaces <n|unlimited> --plan-upgrade <text> [--plan-name <name>]]
                             [--read-only-reason <text> --read-only-upgrade <text>]
                             [--plan-record <file>]
@@ -90,6 +102,13 @@ restore   rebuild a workspace from a backup into an empty place: the newest snap
                       disk, and the MCP tool pack_link_refresh refreshes into the documents of a room.
 --default-room <id>   the room /mcp attaches to when a request names none; created at start when absent.
 --workspace-id <id>   the workspace of rooms created without one (default: that of the first room).
+--share-connect <path>
+                      the path, on the host of the workspace, of the instructions an agent follows to connect to a
+                      shared document (such as /-/connect/instructions). It must start with /. The public page of a
+                      share link offers "<path>?share=<token>" as its connect address; without the flag it offers none.
+                      Sharing itself needs no flag: GET /api/share/<token> and GET /api/share/<token>/snapshot answer
+                      anyone who holds a live link, with no token, and an actors-file entry with a "guest" field limits
+                      that user or agent to the listed documents.
 --plan-seats <n|unlimited>, --plan-workspaces <n|unlimited>
                       a cap of a plan under the limits of the engine licence: the server admits the smaller of
                       the two. A refusal that the plan caused says which limit, what would be one more, and
@@ -151,6 +170,7 @@ const SERVE_OPTIONS = {
   pack: { type: "string" },
   "default-room": { type: "string" },
   "workspace-id": { type: "string" },
+  "share-connect": { type: "string" },
   "plan-seats": { type: "string" },
   "plan-workspaces": { type: "string" },
   "plan-name": { type: "string" },
@@ -489,6 +509,10 @@ async function runServe(args: string[], io: CliIo, env: BackupEnv = process.env)
   const packDir = directory("--pack", values.pack);
   const defaultRoom = id("--default-room", values["default-room"]);
   const workspaceId = id("--workspace-id", values["workspace-id"]);
+  const shareConnect = values["share-connect"] ?? null;
+  if (shareConnect !== null && !(shareConnect.startsWith("/") && !shareConnect.startsWith("//") && !/[\s?#]/.test(shareConnect))) {
+    throw new UsageError("--share-connect must be a path on this host that starts with / (such as /-/connect/instructions), with no query");
+  }
   const planCap = planCapOf(values);
   const readOnly = readOnlyOf(values);
   const assistant = assistantOf(values, db, env);
@@ -518,6 +542,8 @@ async function runServe(args: string[], io: CliIo, env: BackupEnv = process.env)
     operatorOf: (agent) => actors.current().operatorOf(agent) ?? workspace?.assistant.operatorOf(agent) ?? null,
     planCap,
     readOnly,
+    // A guest, and the viewer of a share link, take no seat: they are not members of the paid workspace.
+    seatless: (actor) => actor === SHARE_VIEWER || actors.current().scopeOf(actor) !== null,
   });
   if (defaultRoom !== null && founder !== undefined && !(await server.listRooms()).some((room) => room.room_id === defaultRoom)) {
     // The room of the host, put in place before it serves: a read-only workspace has it too.
@@ -529,7 +555,7 @@ async function runServe(args: string[], io: CliIo, env: BackupEnv = process.env)
     }
   }
   workspace = startWorkspaceServer({
-    service: server,
+    service: scopedService(server, (actor) => actors.current().scopeOf(actor)),
     authenticate: (request) => {
       const token = tokenOf(request);
       return token === null ? null : (actors.current().actors.get(token) ?? null);
@@ -543,6 +569,9 @@ async function runServe(args: string[], io: CliIo, env: BackupEnv = process.env)
     pack: packDir === null ? null : { dir: packDir, evaluator: new PoolXlsxEvaluator(pool), engine: documents },
     defaultRoom,
     readOnly,
+    scopeOf: (actor) => actors.current().scopeOf(actor),
+    shares: server,
+    shareConnect,
     ...(planRecord === null ? {} : { planReadOnly: () => planRecord.current() }),
     assistant,
   });

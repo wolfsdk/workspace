@@ -161,8 +161,8 @@ describe("the API", () => {
     expect(anonymous.status).toBe(401);
     expect(anonymous.headers.get("www-authenticate")).toBe("Bearer");
     expect((await call("/api/me", { headers: auth("wrong") })).status).toBe(401);
-    expect(await (await call("/api/me", { headers: auth() })).json()).toEqual({ actor: ALICE });
-    expect(await (await call("/api/me?token=t-robot")).json()).toEqual({ actor: ROBOT });
+    expect(await (await call("/api/me", { headers: auth() })).json()).toEqual({ actor: ALICE, guest: null });
+    expect(await (await call("/api/me?token=t-robot")).json()).toEqual({ actor: ROBOT, guest: null });
     expect((await call("/api/nothing", { headers: auth() })).status).toBe(404);
   });
 
@@ -756,7 +756,7 @@ describe("the read-only mark of the plan record", () => {
         expect(answer.structuredContent.error).toEqual(refusal);
       }
       // The client is told why and where to pay; everything that does not write keeps working.
-      expect(await (await call("/api/me", { headers: auth() })).json()).toEqual({ actor: ALICE, readOnly: { reason: WORDS[reason], upgrade: UPGRADE } });
+      expect(await (await call("/api/me", { headers: auth() })).json()).toEqual({ actor: ALICE, guest: null, readOnly: { reason: WORDS[reason], upgrade: UPGRADE } });
       await expectReadable(tool);
     }
     const rooms = (await (await call("/api/rooms", { headers: auth() })).json()) as { rooms: { room_id: string }[] };
@@ -765,7 +765,7 @@ describe("the read-only mark of the plan record", () => {
 
     // The customer pays: the record loses its mark, and the same server, sockets and session write again.
     mark = null;
-    expect(await (await call("/api/me", { headers: auth() })).json()).toEqual({ actor: ALICE });
+    expect(await (await call("/api/me", { headers: auth() })).json()).toEqual({ actor: ALICE, guest: null });
     expect((await postJson("/api/rooms", { room_id: "r2", workspace_id: "ws" })).status).toBe(201);
     expect((await call("/api/rooms/r1/docs?name=second.docx", { method: "POST", headers: auth("t-robot"), body: word(["two"]) })).status).toBe(201);
     alice.send({ type: "doc.edit", request_id: "paid", doc_name: "brief.docx", base_revision: 0, mode: "commit", batch: append("Paid.") });

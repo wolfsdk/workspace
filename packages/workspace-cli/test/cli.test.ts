@@ -347,7 +347,7 @@ describe("the process", () => {
       expect(workspace).toBe(`workspace ${origin}`);
       expect(await (await fetch(`${origin}/`)).text()).toContain("Wolf Workspace");
       expect((await fetch(`${origin}/api/me`)).status).toBe(401);
-      expect(await (await fetch(`${origin}/api/me?token=token-a`)).json()).toEqual({ actor: { kind: "user", id: "alice", name: "Alice" } });
+      expect(await (await fetch(`${origin}/api/me?token=token-a`)).json()).toEqual({ actor: { kind: "user", id: "alice", name: "Alice" }, guest: null });
       expect((await fetch(`${origin}/mcp`, { method: "POST", body: "{}" })).status).toBe(401);
     } finally {
       serve.kill("SIGTERM");
@@ -508,11 +508,47 @@ describe("the process", () => {
       }
       const origin = (seen.trim().split("\n")[0] ?? "").replace(/^listening ws:/, "http:").replace(/\/ws$/, "");
       const headers = { authorization: `Bearer ${token}` };
-      expect(await (await fetch(`${origin}/api/me`, { headers })).json()).toEqual({ actor: alice, readOnly: { reason, upgrade } });
+      expect(await (await fetch(`${origin}/api/me`, { headers })).json()).toEqual({ actor: alice, guest: null, readOnly: { reason, upgrade } });
       expect((await fetch(`${origin}/api/rooms`, { headers })).status).toBe(200);
       const refused = await fetch(`${origin}/api/rooms`, { method: "POST", headers: { ...headers, "content-type": "application/json" }, body: JSON.stringify({ room_id: "second" }) });
       expect(refused.status).toBe(402);
       expect(await refused.json()).toEqual({ error: { code: "LICENSE_LIMIT", message: `workspace-read-only: ${reason} ${upgrade}` } });
+    } finally {
+      serve.kill("SIGTERM");
+    }
+    expect(await serve.exited).toBe(EXIT_FRESH);
+  });
+
+  test("serve takes --share-connect as a path of its own host, names the scope of a guest, and answers a share link with no token", async () => {
+    const actors = join(dir, "actors.json");
+    await writeFile(
+      actors,
+      JSON.stringify({
+        "token-a": { kind: "user", id: "alice", name: "Alice" },
+        "token-g": { kind: "user", id: "gail", name: "Gail", guest: { docs: [{ room: "main", doc: "memo.docx" }] } },
+      }),
+    );
+    const base = ["--db", join(dir, "rooms.sqlite"), "--blobs", join(dir, "blobs"), "--engine", join(dir, "no-such-wolf"), "--actors", actors, "--port", "0"];
+    const bad = await run("serve", ...base, "--share-connect", "https://elsewhere.example.test/connect");
+    expect(bad.code).toBe(EXIT_ERROR);
+    expect(bad.err).toContain("--share-connect");
+    const serve = Bun.spawn([process.execPath, CLI, "serve", ...base, "--share-connect", "/-/connect/instructions"], { stdout: "pipe", stderr: "pipe" });
+    try {
+      const reader = serve.stdout.getReader();
+      let seen = "";
+      while (!seen.includes("mcp ")) {
+        const { done, value } = await reader.read();
+        if (done) throw new Error(`serve exited before it listened: ${await new Response(serve.stderr).text()}`);
+        seen += new TextDecoder().decode(value);
+      }
+      const origin = (seen.trim().split("\n")[0] ?? "").replace(/^listening ws:/, "http:").replace(/\/ws$/, "");
+      const gail = { headers: { authorization: "Bearer token-g" } };
+      expect(await (await fetch(`${origin}/api/me`, gail)).json()).toMatchObject({ guest: { docs: [{ room_id: "main", doc_name: "memo.docx" }] } });
+      expect((await fetch(`${origin}/api/rooms`, { ...gail, method: "POST", headers: { ...gail.headers, "content-type": "application/json" }, body: JSON.stringify({ room_id: "mine" }) })).status).toBe(403);
+      // The public route is there with no token, and says only that the link is not one.
+      const unknown = await fetch(`${origin}/api/share/${"a".repeat(43)}`);
+      expect(unknown.status).toBe(404);
+      expect(await unknown.json()).toMatchObject({ error: { code: "SHARE_NOT_FOUND" } });
     } finally {
       serve.kill("SIGTERM");
     }

@@ -116,7 +116,7 @@ describe("stdio", () => {
     const lines: Line[] = [];
     while (!lines.some((l) => l.id === call.id)) lines.push(await client.line());
     const events = lines.filter((l) => l.method === "notifications/message").map((l) => (l.params as { data: { type: string; seq: number } }).data);
-    expect(events.map((e) => e.type)).toEqual(["agent.activity", "doc.committed", "agent.activity"]);
+    expect(events.map((e) => e.type)).toEqual(["doc.committed", "agent.activity", "agent.activity"]);
     expect(lines.find((l) => l.id === call.id)).toMatchObject({ result: { structuredContent: { mode: "commit", revision: 1 } } });
     await client.end();
   });
@@ -138,7 +138,7 @@ describe("stdio", () => {
     const lines: Line[] = [];
     while (!lines.some((l) => l.id === call.id)) lines.push(await client.line());
     const events = lines.filter((l) => l.method === "notifications/message").map((l) => (l.params as { data: { type: string } }).data.type);
-    expect(events).toEqual(["agent.activity", "doc.committed", "agent.activity"]);
+    expect(events).toEqual(["doc.committed", "agent.activity", "agent.activity"]);
     await client.end();
   });
 

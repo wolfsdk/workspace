@@ -891,17 +891,16 @@ export class WorkspaceTools {
 
   // doc_edit ----------------------------------------------------------------------------------------------
 
-  /** The agent is announced as proposing (or committing) by the room itself, in the transaction that takes the
-   * batch, ahead of the edit's own event: the room reads the announcement, then `doc.committed` (or the proposal),
-   * then `idle`. A refused batch changed nothing and is announced as nothing, so no row reads as a proposal that
-   * was never made. An announcement sent before the room judged the batch could not be taken back. */
+  /** The batch goes to the room first, and the agent is announced as proposing (or committing) once the room took
+   * it: the activity of the room says what the agent did, so a refused batch, which changed nothing, leaves no row
+   * that reads as a proposal. */
   async #docEdit(actor: RoomActor, args: Args<"doc_edit">): Promise<ToolResult> {
     const { doc, mode, ops } = args;
     const batch = args.message === undefined ? { ops } : { ops, label: args.message };
     const detail = args.message ?? `${ops.length} op${ops.length === 1 ? "" : "s"}`;
-    const announce = { doc_name: doc, activity: mode === "propose" ? "proposing" : "committing", detail: preview(detail, 120) } as const;
-    const edited = await this.#service.edit(this.#roomId, actor, { doc_name: doc, base_revision: args.base_revision, mode, batch }, { announce });
+    const edited = await this.#service.edit(this.#roomId, actor, { doc_name: doc, base_revision: args.base_revision, mode, batch });
     if (!edited.ok) return await this.#editRefusal(actor, doc, ops, edited.error);
+    await this.#announce(actor, mode === "propose" ? "proposing" : "committing", doc, preview(detail, 120));
     await this.#announce(actor, "idle", doc, undefined);
     const outcome = edited.value;
     if (outcome.mode === "propose") return okResult({ ...proposalData(outcome.proposal), existed: outcome.existed });

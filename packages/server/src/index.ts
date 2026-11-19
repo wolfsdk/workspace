@@ -49,6 +49,7 @@ export {
 } from "./export.ts";
 export { WorkerPool, type EngineWorker, type WorkerPoolOptions } from "./pool.ts";
 export { RoomServer, type RoomAction, type RoomServerOptions } from "./rooms.ts";
+export { scopedService, type AccessScope, type ScopeOf } from "./scoped.ts";
 export * from "./service.ts";
 export { isRoomDatabase, RoomStore } from "./store.ts";
 export { startWsServer, type WsServer, type WsServerOptions } from "./ws.ts";

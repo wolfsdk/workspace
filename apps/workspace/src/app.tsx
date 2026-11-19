@@ -4,10 +4,11 @@
 import type { EngineSource } from "@wolfsdk/review";
 import type { RoomActor, RoomProposal } from "@wolfsdk/protocol/workspace";
 import { useCallback, useEffect, useMemo, useRef, useState } from "preact/hooks";
-import { ApiError, type PackStatus, type RoomRow, type WorkspaceApi } from "./lib/api.ts";
+import { ApiError, type GuestScope, type PackStatus, type RoomRow, type WorkspaceApi } from "./lib/api.ts";
 import { assistantShown } from "./lib/assistant-client.ts";
 import { documentSummaries, historyOf, participantsOf, proposalsOf, threadsOf } from "./lib/room-state.ts";
 import { isDecided } from "./lib/review.ts";
+import { canShare } from "./lib/share.ts";
 import {
   apiFor,
   type Credential,
@@ -32,6 +33,7 @@ import { ConnectionDot, downloadBytes, Icon, modKey, SessionControls, type Toast
 import { LeftRail } from "./ui/left-rail.tsx";
 import { type CommentPost, RightRail, type RightTab } from "./ui/right-rail.tsx";
 import { HostedGate, SignIn } from "./ui/sign-in.tsx";
+import { ShareDialog } from "./ui/share-dialog.tsx";
 import { Stage } from "./ui/stage.tsx";
 import { Switcher, type SwitcherItem } from "./ui/switcher.tsx";
 import { useRoom } from "./use-room.ts";
@@ -49,8 +51,8 @@ function initialToken(): string | null {
 }
 
 /** A signed-in page: the credential it signed in with (a token, or a hosting front's session that holds no token),
- * the actor the server says it stands for, and the API client for it. */
-type Signed = { credential: Credential; actor: RoomActor; api: WorkspaceApi };
+ * the actor the server says it stands for, its scope when it is a guest, and the API client for it. */
+type Signed = { credential: Credential; actor: RoomActor; guest: GuestScope | null; api: WorkspaceApi };
 
 export function App() {
   const [boot] = useState(initialToken);
@@ -67,9 +69,9 @@ export function App() {
     const credential: Credential = { kind: "token", token: next };
     const api = apiFor(credential, location.origin, PAGE);
     try {
-      const { actor } = await api.me();
+      const { actor, guest } = await api.me();
       sessionStorage.setItem(TOKEN_KEY, next);
-      setSigned({ credential, actor, api });
+      setSigned({ credential, actor, guest, api });
       setAuthError(null);
       setSwitchingToken(false);
     } catch (e) {
@@ -90,8 +92,8 @@ export function App() {
     const credential: Credential = { kind: "hosted", session };
     const api = apiFor(credential, location.origin, PAGE);
     try {
-      const { actor } = await api.me();
-      setSigned({ credential, actor, api });
+      const { actor, guest } = await api.me();
+      setSigned({ credential, actor, guest, api });
       setHostedError(null);
     } catch (e) {
       const error =
@@ -136,6 +138,7 @@ export function App() {
       api={signed.api}
       socketUrl={socketUrlFor(credential, location.origin)}
       actor={signed.actor}
+      guest={signed.guest}
       account={hosted?.account ?? null}
       accountPage={hosted?.accountPage}
       plansPage={hosted?.plansPage}
@@ -168,6 +171,9 @@ type WorkspaceProps = {
   /** The room socket: with `?token=` for a token, with no `token` parameter behind a hosting front. */
   socketUrl: string;
   actor: RoomActor;
+  /** The documents the actor is limited to when it is a guest; null for a member. A guest proposes and comments, and
+   * sees none of what it is refused: room creation, uploads, the pack, decisions, export, the assistant and sharing. */
+  guest: GuestScope | null;
   /** The account a hosting front signed in; null on a self-hosted server. */
   account: HostedSession["account"] | null;
   /** The hosting front's pages for agent tokens and for the plan, when it names them (see `HostedSession`). */
@@ -183,7 +189,7 @@ type WorkspaceProps = {
   onSignOut(): Promise<void> | void;
 };
 
-function Workspace({ api, socketUrl, actor, account, accountPage, plansPage, switchingToken, onSwitchToken, onSignIn, signInError, checking, onSignOut }: WorkspaceProps) {
+function Workspace({ api, socketUrl, actor, guest, account, accountPage, plansPage, switchingToken, onSwitchToken, onSignIn, signInError, checking, onSignOut }: WorkspaceProps) {
   const params = useMemo(() => new URLSearchParams(location.search), []);
   /** `?share=1`: a shared link shows the server's display-list snapshot and loads no engine. */
   const shareMode = useMemo(() => shareModeOf(location.search), []);
@@ -205,6 +211,7 @@ function Workspace({ api, socketUrl, actor, account, accountPage, plansPage, swi
   const [deciding, setDeciding] = useState<string | null>(null);
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [signingOut, setSigningOut] = useState(false);
+  const [sharing, setSharing] = useState(false);
   const dirty = useRef(0);
   const toastId = useRef(0);
 
@@ -268,8 +275,9 @@ function Workspace({ api, socketUrl, actor, account, accountPage, plansPage, swi
     void loadRooms().then((list) => {
       setRoomId((current) => (current !== null && list.some((r) => r.room_id === current) ? current : (list[0]?.room_id ?? null)));
     });
-    void api.pack().then(setPack, () => setPack(null));
-  }, [api, loadRooms]);
+    // A guest is refused the pack: it does not ask.
+    if (guest === null) void api.pack().then(setPack, () => setPack(null));
+  }, [api, loadRooms, guest]);
 
   const documents = useMemo(() => documentSummaries(view.room), [view.room]);
   const activeDoc = documents.find((d) => d.name === docName) ?? null;
@@ -465,9 +473,11 @@ function Workspace({ api, socketUrl, actor, account, accountPage, plansPage, swi
   const history_ = useMemo(() => historyOf(view.room, scope), [view.room, scope]);
   const participants = useMemo(() => participantsOf(view), [view]);
   const proposalIds = useMemo(() => view.room?.proposals.map((p) => p.proposal_id) ?? [], [view.room]);
+  const showAssistant = guest === null && assistantShown(assistant.view);
+  const shareable = roomId !== null && activeDoc !== null && canShare(actor, guest);
 
   return (
-    <div class={`app${leftOpen ? "" : " no-left"}${rightOpen ? "" : " no-right"}${assistantShown(assistant.view) ? " has-assistant" : ""}`}>
+    <div class={`app${leftOpen ? "" : " no-left"}${rightOpen ? "" : " no-right"}${showAssistant ? " has-assistant" : ""}`}>
       <header class="topbar">
         <button
           type="button"
@@ -498,6 +508,12 @@ function Workspace({ api, socketUrl, actor, account, accountPage, plansPage, swi
           <kbd>{modKey()} K</kbd>
         </button>
         <span class="topbar-spacer" />
+        {shareable ? (
+          <button type="button" class="button button--small" aria-haspopup="dialog" title={`Share ${activeDoc.name} by link`} onClick={() => setSharing(true)}>
+            <Icon name="link" size={14} />
+            Share
+          </button>
+        ) : null}
         {roomId ? <ConnectionDot status={room.status} /> : null}
         <button
           type="button"
@@ -511,6 +527,7 @@ function Workspace({ api, socketUrl, actor, account, accountPage, plansPage, swi
         <SessionControls
           actor={actor}
           account={account}
+          guest={guest !== null}
           title={shareMode ? "Shared snapshot: no engine is loaded" : engine === undefined ? undefined : `Engine: ${describeEngine(engine)}`}
           onSwitchToken={onSwitchToken ? () => onSwitchToken(true) : undefined}
           accountPage={accountPage}
@@ -543,6 +560,7 @@ function Workspace({ api, socketUrl, actor, account, accountPage, plansPage, swi
           pack={pack}
           packBusy={packBusy}
           uploading={uploading}
+          guest={guest !== null}
           onSelectRoom={selectRoom}
           onCreateRoom={createRoom}
           onSelectDoc={selectDoc}
@@ -565,6 +583,7 @@ function Workspace({ api, socketUrl, actor, account, accountPage, plansPage, swi
           proposal={reviewing}
           proposalIds={proposalIds}
           activity={view.activity}
+          guest={guest !== null}
           engine={engine ?? null}
           shareMode={shareMode}
           theme={theme}
@@ -580,16 +599,18 @@ function Workspace({ api, socketUrl, actor, account, accountPage, plansPage, swi
           notify={notify}
         />
       )}
-      <AssistantPanel
-        view={assistant.view}
-        docName={activeDoc?.name ?? null}
-        selection={selection}
-        proposals={view.room?.proposals ?? []}
-        shareMode={shareMode}
-        onAsk={assistant.ask}
-        onCancel={assistant.cancel}
-        onInspect={inspect}
-      />
+      {guest === null ? (
+        <AssistantPanel
+          view={assistant.view}
+          docName={activeDoc?.name ?? null}
+          selection={selection}
+          proposals={view.room?.proposals ?? []}
+          shareMode={shareMode}
+          onAsk={assistant.ask}
+          onCancel={assistant.cancel}
+          onInspect={inspect}
+        />
+      ) : null}
       {rightOpen ? (
         <RightRail
           tab={tab}
@@ -611,6 +632,7 @@ function Workspace({ api, socketUrl, actor, account, accountPage, plansPage, swi
           history={history_}
           activity={view.activity}
           shareMode={shareMode}
+          guest={guest !== null}
         />
       ) : null}
       {switcher ? (
@@ -623,6 +645,9 @@ function Workspace({ api, socketUrl, actor, account, accountPage, plansPage, swi
             else selectRoom(item.id);
           }}
         />
+      ) : null}
+      {sharing && shareable ? (
+        <ShareDialog api={api} roomId={roomId} docName={activeDoc.name} hosted={account !== null} onClose={() => setSharing(false)} />
       ) : null}
       {switchingToken && onSwitchToken ? <SignIn error={signInError} busy={checking} onSubmit={onSignIn} onCancel={() => onSwitchToken(false)} /> : null}
       <Toasts toasts={toasts} dismiss={(id) => setToasts((current) => current.filter((t) => t.id !== id))} />

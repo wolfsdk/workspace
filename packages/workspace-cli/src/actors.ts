@@ -1,13 +1,16 @@
 // Who may connect to `serve`: a JSON file that maps each bearer token to the actor it stands for,
 // `{ "<token>": { "kind": "user", "id": "alice", "name": "Alice" } }`. An agent entry may also carry
 // `"operator": { "id": "alice", "name": "Alice" }` so it acts on its operator's seat instead of taking
-// a seat of its own. The server derives the actor and operator of a connection from the token file alone;
-// nothing a client says about itself inside the socket is trusted.
+// a seat of its own. Any entry may carry `"guest": { "docs": [ { "room": "<room id>", "doc": "<document name>" } ] }`:
+// the actor is then a guest, limited to those documents, and takes no seat. An agent with no `guest` whose operator is
+// a guest user of the file is limited to the documents of that user. The server derives the actor, operator and limits
+// of a connection from the token file alone; nothing a client says about itself inside the socket is trusted.
 import { randomBytes } from "node:crypto";
 import { chmodSync, chownSync, linkSync, readFileSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import type { RoomActor } from "@wolfsdk/protocol/workspace";
+import type { AccessScope } from "@wolfsdk/server";
 import { UsageError } from "./errors.ts";
 
 const ACTOR_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
@@ -17,7 +20,12 @@ export type ActorOperator = { id: string; name: string };
 export type ActorDirectory = {
   actors: Map<string, RoomActor>;
   operatorOf: (agent: RoomActor) => ActorOperator | null;
+  /** What `actor` may reach when it is a guest: its documents, with `propose` access. `null` for a member. */
+  scopeOf: (actor: RoomActor) => AccessScope | null;
 };
+
+/** The most documents one guest entry may list. */
+const MAX_GUEST_DOCS = 50;
 
 function isOperator(value: unknown): value is ActorOperator {
   return (
@@ -34,34 +42,57 @@ function isOperator(value: unknown): value is ActorOperator {
   );
 }
 
-function parseEntry(path: string, value: unknown): { actor: RoomActor; operator: ActorOperator | null } {
+type ParsedEntry = { actor: RoomActor; operator: ActorOperator | null; guest: AccessScope | null };
+
+/** The scope of a `guest` field: 1 to 50 documents, each a room id and a non-empty document name, and nothing else. */
+function parseGuest(path: string, id: string, value: unknown): AccessScope {
+  const shape = `${path}: guest of ${id} must be {"docs": [{"room": <room id>, "doc": <document name>}]} with 1 to ${MAX_GUEST_DOCS} documents`;
+  if (typeof value !== "object" || value === null || Array.isArray(value)) throw new UsageError(shape);
+  const keys = Object.keys(value);
+  if (!keys.every((k) => k === "docs")) throw new UsageError(`${path}: unknown field on the guest of ${id} (${keys.filter((k) => k !== "docs").join(", ")})`);
+  const docs: unknown = "docs" in value ? value.docs : undefined;
+  if (!Array.isArray(docs) || docs.length < 1 || docs.length > MAX_GUEST_DOCS) throw new UsageError(shape);
+  const scoped: { room_id: string; doc_name: string }[] = [];
+  for (const doc of docs) {
+    if (typeof doc !== "object" || doc === null || Array.isArray(doc)) throw new UsageError(shape);
+    const pair = doc as Record<string, unknown>;
+    const extra = Object.keys(pair).filter((k) => k !== "room" && k !== "doc");
+    if (extra.length > 0) throw new UsageError(`${path}: unknown field on a document of the guest of ${id} (${extra.join(", ")})`);
+    if (typeof pair.room !== "string" || !ACTOR_ID.test(pair.room) || typeof pair.doc !== "string" || pair.doc === "") throw new UsageError(shape);
+    scoped.push({ room_id: pair.room, doc_name: pair.doc });
+  }
+  return { access: "propose", docs: scoped };
+}
+
+function parseEntry(path: string, value: unknown): ParsedEntry {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     throw new UsageError(`${path}: the actor of a token must be {"kind": "user" | "agent", "id": <id>, "name": <text>}`);
   }
   const keys = Object.keys(value);
-  if (!keys.every((k) => k === "kind" || k === "id" || k === "name" || k === "operator")) {
+  if (!keys.every((k) => k === "kind" || k === "id" || k === "name" || k === "operator" || k === "guest")) {
     throw new UsageError(`${path}: unknown field on actor entry (${keys.join(", ")})`);
   }
   const rec = value as Record<string, unknown>;
   if ((rec.kind !== "user" && rec.kind !== "agent") || typeof rec.id !== "string" || !ACTOR_ID.test(rec.id) || typeof rec.name !== "string" || rec.name === "") {
     throw new UsageError(`${path}: the actor of a token must be {"kind": "user" | "agent", "id": <id>, "name": <text>} with an id of letters, digits and . _ : -`);
   }
-  if (rec.operator === undefined) {
-    return { actor: { kind: rec.kind, id: rec.id, name: rec.name }, operator: null };
-  }
+  const guest = rec.guest === undefined ? null : parseGuest(path, rec.id, rec.guest);
+  const actor: RoomActor = { kind: rec.kind, id: rec.id, name: rec.name };
+  if (rec.operator === undefined) return { actor, operator: null, guest };
   if (rec.kind !== "agent") {
     throw new UsageError(`${path}: only an agent entry may name an operator (${rec.id})`);
   }
   if (!isOperator(rec.operator)) {
     throw new UsageError(`${path}: operator of agent ${rec.id} must be {"id": <id>, "name": <text>}`);
   }
-  return {
-    actor: { kind: rec.kind, id: rec.id, name: rec.name },
-    operator: { id: rec.operator.id, name: rec.operator.name },
-  };
+  return { actor, operator: { id: rec.operator.id, name: rec.operator.name }, guest };
 }
 
-/** The actors and agent-operator bindings in the `text` of the file at `path`. */
+/** The documents of a scope as one comparable text, whatever their order. */
+const scopeKey = (scope: AccessScope | null): string =>
+  scope === null ? "" : JSON.stringify(scope.docs.map((d) => [d.room_id, d.doc_name]).sort((a, b) => (a[0]! + "\0" + a[1]!).localeCompare(b[0]! + "\0" + b[1]!)));
+
+/** The actors, agent-operator bindings and guest scopes in the `text` of the file at `path`. */
 function parseActorDirectory(path: string, text: string): ActorDirectory {
   let parsed: unknown;
   try {
@@ -74,9 +105,11 @@ function parseActorDirectory(path: string, text: string): ActorDirectory {
   }
   const actors = new Map<string, RoomActor>();
   const operators = new Map<string, ActorOperator | null>();
+  /** The scope each identity has, by `<kind>:<id>`: an identity is one guest or one member whatever token it signs in with. */
+  const scopes = new Map<string, AccessScope | null>();
   for (const [token, value] of Object.entries(parsed)) {
     if (token === "") throw new UsageError(`${path}: a token is empty`);
-    const { actor, operator } = parseEntry(path, value);
+    const { actor, operator, guest } = parseEntry(path, value);
     if (actor.kind === "agent") {
       const prev = operators.get(actor.id);
       if (prev !== undefined && (prev?.id !== operator?.id || prev?.name !== operator?.name)) {
@@ -84,12 +117,23 @@ function parseActorDirectory(path: string, text: string): ActorDirectory {
       }
       operators.set(actor.id, operator);
     }
+    const identity = `${actor.kind}:${actor.id}`;
+    if (scopes.has(identity) && scopeKey(scopes.get(identity) ?? null) !== scopeKey(guest)) {
+      throw new UsageError(`${path}: ${actor.kind} ${actor.id} has conflicting guest documents across tokens`);
+    }
+    scopes.set(identity, guest);
     actors.set(token, actor);
   }
   if (actors.size === 0) throw new UsageError(`${path} names no actor: nobody could connect`);
+  // An agent that names no documents of its own is limited as its operator is.
+  for (const actor of actors.values()) {
+    const operator = actor.kind === "agent" ? (operators.get(actor.id) ?? null) : null;
+    if (operator !== null && scopes.get(`agent:${actor.id}`) === null) scopes.set(`agent:${actor.id}`, scopes.get(`user:${operator.id}`) ?? null);
+  }
   return {
     actors,
     operatorOf: (agent) => (agent.kind === "agent" ? (operators.get(agent.id) ?? null) : null),
+    scopeOf: (actor) => scopes.get(`${actor.kind}:${actor.id}`) ?? null,
   };
 }
 

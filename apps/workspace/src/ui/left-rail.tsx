@@ -14,6 +14,8 @@ export type LeftRailProps = {
   pack: PackStatus | null;
   packBusy: boolean;
   uploading: string | null;
+  /** A guest: no room creation, no upload, no pack and no download of a head, since the server refuses each. */
+  guest?: boolean;
   onSelectRoom(roomId: string): void;
   onCreateRoom(roomId: string): Promise<boolean>;
   onSelectDoc(name: string): void;
@@ -27,14 +29,14 @@ export function LeftRail(props: LeftRailProps) {
     <nav class="rail rail--left" aria-label="Rooms and documents">
       <RoomSection {...props} />
       <DocumentSection {...props} />
-      {props.pack ? (
+      {props.pack && !props.guest ? (
         <PackCard pack={props.pack} roomId={props.roomId} documents={props.documents} busy={props.packBusy} onRefresh={props.onRefreshPack} />
       ) : null}
     </nav>
   );
 }
 
-function RoomSection({ rooms, roomId, onSelectRoom, onCreateRoom }: LeftRailProps) {
+function RoomSection({ rooms, roomId, guest, onSelectRoom, onCreateRoom }: LeftRailProps) {
   const [creating, setCreating] = useState(false);
   const [name, setName] = useState("");
   const id = roomIdFrom(name);
@@ -42,22 +44,26 @@ function RoomSection({ rooms, roomId, onSelectRoom, onCreateRoom }: LeftRailProp
     <section class="rail-section">
       <header class="rail-heading">
         <h2>Room</h2>
-        <button
-          type="button"
-          class="icon-button"
-          aria-label="New room"
-          aria-expanded={creating}
-          title="New room"
-          onClick={() => setCreating(!creating)}
-        >
-          <Icon name="plus" />
-        </button>
+        {guest ? null : (
+          <button
+            type="button"
+            class="icon-button"
+            aria-label="New room"
+            aria-expanded={creating}
+            title="New room"
+            onClick={() => setCreating(!creating)}
+          >
+            <Icon name="plus" />
+          </button>
+        )}
       </header>
       {rooms.length === 0 && !creating ? (
         <EmptyState title="No rooms yet">
-          <button type="button" class="button button--small" onClick={() => setCreating(true)}>
-            Create a room
-          </button>
+          {guest ? null : (
+            <button type="button" class="button button--small" onClick={() => setCreating(true)}>
+              Create a room
+            </button>
+          )}
         </EmptyState>
       ) : (
         <label class="select">
@@ -71,7 +77,7 @@ function RoomSection({ rooms, roomId, onSelectRoom, onCreateRoom }: LeftRailProp
           </select>
         </label>
       )}
-      {creating ? (
+      {creating && !guest ? (
         <form
           class="inline-form"
           onSubmit={async (e) => {
@@ -106,7 +112,7 @@ function RoomSection({ rooms, roomId, onSelectRoom, onCreateRoom }: LeftRailProp
   );
 }
 
-function DocumentSection({ roomId, documents, activeDoc, uploading, onSelectDoc, onUpload, onDownloadHead }: LeftRailProps) {
+function DocumentSection({ roomId, documents, activeDoc, uploading, guest, onSelectDoc, onUpload, onDownloadHead }: LeftRailProps) {
   const input = useRef<HTMLInputElement>(null);
   const [dragging, setDragging] = useState(false);
   const drop = (files: FileList | null | undefined): void => {
@@ -116,7 +122,7 @@ function DocumentSection({ roomId, documents, activeDoc, uploading, onSelectDoc,
     <section
       class={`rail-section rail-section--grow${dragging ? " is-dragging" : ""}`}
       onDragOver={(e) => {
-        if (roomId === null) return;
+        if (roomId === null || guest) return;
         e.preventDefault();
         setDragging(true);
       }}
@@ -126,37 +132,41 @@ function DocumentSection({ roomId, documents, activeDoc, uploading, onSelectDoc,
       onDrop={(e) => {
         e.preventDefault();
         setDragging(false);
-        drop(e.dataTransfer?.files);
+        if (!guest) drop(e.dataTransfer?.files);
       }}
     >
       <header class="rail-heading">
         <h2>Documents</h2>
-        <button
-          type="button"
-          class="icon-button"
-          aria-label="Upload documents"
-          title="Upload documents"
-          disabled={roomId === null}
-          onClick={() => input.current?.click()}
-        >
-          <Icon name="upload" />
-        </button>
-        <input
-          ref={input}
-          type="file"
-          multiple
-          hidden
-          accept=".docx,.xlsx,.pptx,.pdf"
-          onChange={(e) => {
-            drop(e.currentTarget.files);
-            e.currentTarget.value = "";
-          }}
-        />
+        {guest ? null : (
+          <>
+            <button
+              type="button"
+              class="icon-button"
+              aria-label="Upload documents"
+              title="Upload documents"
+              disabled={roomId === null}
+              onClick={() => input.current?.click()}
+            >
+              <Icon name="upload" />
+            </button>
+            <input
+              ref={input}
+              type="file"
+              multiple
+              hidden
+              accept=".docx,.xlsx,.pptx,.pdf"
+              onChange={(e) => {
+                drop(e.currentTarget.files);
+                e.currentTarget.value = "";
+              }}
+            />
+          </>
+        )}
       </header>
       {uploading ? <p class="hint hint--progress">Uploading {uploading}</p> : null}
       {documents.length === 0 ? (
         <EmptyState title={roomId === null ? "Pick a room to see its documents" : "This room has no documents"}>
-          {roomId === null ? null : <p>Drop a DOCX, XLSX, PPTX or PDF file here, or click Upload.</p>}
+          {roomId === null || guest ? null : <p>Drop a DOCX, XLSX, PPTX or PDF file here, or click Upload.</p>}
         </EmptyState>
       ) : (
         <ul class="doc-list" role="listbox" aria-label="Documents">
@@ -183,15 +193,17 @@ function DocumentSection({ roomId, documents, activeDoc, uploading, onSelectDoc,
                   ) : null}
                 </span>
               </button>
-              <button
-                type="button"
-                class="icon-button doc-download"
-                aria-label={`Download head of ${doc.name}`}
-                title="Download head"
-                onClick={() => onDownloadHead(doc.name)}
-              >
-                <Icon name="download" size={14} />
-              </button>
+              {guest ? null : (
+                <button
+                  type="button"
+                  class="icon-button doc-download"
+                  aria-label={`Download head of ${doc.name}`}
+                  title="Download head"
+                  onClick={() => onDownloadHead(doc.name)}
+                >
+                  <Icon name="download" size={14} />
+                </button>
+              )}
               <span class="doc-updated">
                 Updated <Time at={doc.updated_at} />
               </span>

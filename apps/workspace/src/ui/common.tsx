@@ -22,6 +22,7 @@ const PATHS = {
   refresh: "M12.5 6A5 5 0 0 0 3.2 6.5M3.5 10a5 5 0 0 0 9.3-.5M12.5 2.5V6H9M3.5 13.5V10H7",
   eye: "M1.5 8s2.5-4.5 6.5-4.5S14.5 8 14.5 8s-2.5 4.5-6.5 4.5S1.5 8 1.5 8zM8 10a2 2 0 1 0 0-4 2 2 0 0 0 0 4z",
   key: "M10 9.5a3.5 3.5 0 1 0-3.3-2.3L2.5 11.5v2h2v-1.5H6v-1.5h1.5l.6-.6A3.5 3.5 0 0 0 10 9.5z",
+  link: "M6.5 9.5l3-3M7.5 4.5l1-1a2.5 2.5 0 0 1 3.5 3.5l-1 1M8.5 11.5l-1 1A2.5 2.5 0 0 1 4 9l1-1",
 } as const;
 
 export type IconName = keyof typeof PATHS;
@@ -56,6 +57,8 @@ export type SessionControlsProps = {
   account: { email: string; name: string } | null;
   /** The tooltip of the signed-in actor. */
   title?: string;
+  /** The actor is a guest of shared documents: the role says so. */
+  guest?: boolean;
   /** Opens the token dialog. Absent behind a hosting front: the front holds the session and the page has no token. */
   onSwitchToken?: () => void;
   /** The hosting front's page where the signed-in person makes agent tokens. Absent when the front names none. */
@@ -68,12 +71,12 @@ export type SessionControlsProps = {
 
 /** Who is signed in, in the top bar, with the way to switch token (self-hosted only) and to sign out. Behind a hosting
  * front that names them, also the way to the page that makes agent tokens and to the page of the plan. */
-export function SessionControls({ actor, account, title, onSwitchToken, accountPage, plansPage, onSignOut, signingOut = false }: SessionControlsProps) {
+export function SessionControls({ actor, account, title, guest = false, onSwitchToken, accountPage, plansPage, onSignOut, signingOut = false }: SessionControlsProps) {
   return (
     <>
       <span class="me" title={title}>
         <ActorBadge actor={actor} />
-        <span class={`role role--${actor.kind}`}>{actor.kind === "agent" ? "Agent" : "User"}</span>
+        <span class={`role role--${guest ? "guest" : actor.kind}`}>{guest ? "Guest" : actor.kind === "agent" ? "Agent" : "User"}</span>
         {account ? (
           <span class="status status--muted" title={`Signed in as ${account.name || account.email}`}>
             {account.email || account.name}

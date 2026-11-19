@@ -24,10 +24,12 @@ import { ROOM_CONTRACT } from "@wolfsdk/protocol/workspace";
 import type { BlobStore } from "./blobs.ts";
 import type { DocumentEngine } from "./engine.ts";
 import { sha256Hex } from "./hash.ts";
+import type { ShareLink } from "./service.ts";
 
 /** The schema version this server reads and writes; a backup of another version is refused by restore. The
- * `keyframes` table did not change it: a database without one gets it, filled from its session log, when a store
- * opens it, and a server that does not know the table leaves it alone. */
+ * `keyframes` and `shares` tables did not change it: a database without one gets it when a store opens it (the
+ * keyframes filled from the session log, the shares empty), and a server that does not know the table leaves it
+ * alone. */
 export const SCHEMA_VERSION = "2";
 
 /**
@@ -125,10 +127,23 @@ CREATE TABLE IF NOT EXISTS seats (
   first_seen_at TEXT NOT NULL,
   PRIMARY KEY (kind, id)
 ) WITHOUT ROWID;
+
+-- The live share link of a document: at most one, and it ends with its row (an ended token is not kept).
+CREATE TABLE IF NOT EXISTS shares (
+  room_id TEXT NOT NULL REFERENCES rooms(room_id),
+  doc_name TEXT NOT NULL,
+  token TEXT NOT NULL UNIQUE,
+  created_by TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (room_id, doc_name)
+) WITHOUT ROWID;
 `;
 
 export type RoomRow = { room_id: string; workspace_id: string; seq: number };
 export type SeatRow = { kind: RoomActor["kind"]; id: string; name: string; first_seen_at: string };
+type ShareRow = { token: string; room_id: string; doc_name: string; created_by: string; created_at: string };
+const SHARE_SELECT = "SELECT token, room_id, doc_name, created_by, created_at FROM shares";
+const shareFrom = (row: ShareRow): ShareLink => ({ ...row, created_by: JSON.parse(row.created_by) as RoomActor });
 export type StoredEvent = { seq: number; event: RoomServerEvent };
 /** A revision of a document whose full bytes history keeps, in the blob `sha256`. */
 export type Keyframe = { revision: number; sha256: string };
@@ -552,6 +567,28 @@ export class RoomStore {
 
   removeSeat(kind: SeatRow["kind"], id: string): boolean {
     return this.db.query("DELETE FROM seats WHERE kind = ? AND id = ?").run(kind, id).changes > 0;
+  }
+
+  // Share links ------------------------------------------------------------------------------------------
+
+  shareOf(roomId: string, docName: string): ShareLink | null {
+    const row = this.db.query<ShareRow, [string, string]>(`${SHARE_SELECT} WHERE room_id = ? AND doc_name = ?`).get(roomId, docName);
+    return row === null ? null : shareFrom(row);
+  }
+
+  shareByToken(token: string): ShareLink | null {
+    const row = this.db.query<ShareRow, [string]>(`${SHARE_SELECT} WHERE token = ?`).get(token);
+    return row === null ? null : shareFrom(row);
+  }
+
+  addShare(link: ShareLink): void {
+    this.db
+      .query("INSERT INTO shares (room_id, doc_name, token, created_by, created_at) VALUES (?, ?, ?, ?, ?)")
+      .run(link.room_id, link.doc_name, link.token, JSON.stringify(link.created_by), link.created_at);
+  }
+
+  removeShare(roomId: string, docName: string): boolean {
+    return this.db.query("DELETE FROM shares WHERE room_id = ? AND doc_name = ?").run(roomId, docName).changes > 0;
   }
 
   // Snapshot ---------------------------------------------------------------------------------------------

@@ -76,16 +76,6 @@ export type EditRequest = {
   batch: RoomBatch;
 };
 
-/** What a caller in this process asks of `edit` beyond the request of the room contract. It is not a field of
- * `doc.edit`: no client of the wire can send it, so nothing here widens what a socket may do. */
-export type EditOptions = {
-  /** An agent's announcement of the edit (`committing` or `proposing`), landed in the same transaction as the
-   * edit and ahead of its events, so the room reads announcement, then `doc.committed` or `proposal.updated`.
-   * An edit the room refuses announces nothing. Only an agent may announce; any other actor is `FORBIDDEN`.
-   * The announcement is the caller's to follow with its own `idle`. */
-  announce?: ActivityReport;
-};
-
 /** What `edit` answers. A proposal says whether it already existed: a batch whose document, base revision and ops
  * equal those of a proposal already open (a pack refreshed twice, an agent repeating its edit) opens nothing, and
  * the answer is that open proposal with `existed: true`. A proposal the edit opened has `existed: false`. */
@@ -159,7 +149,7 @@ export interface RoomService {
    * `REVISION_MISMATCH`; a batch the engine refuses commits nothing, and is `BAD_REQUEST` when the engine
    * judged it and `ENGINE_FAILED` when the engine could not run it. Edits of one document are serialized. A
    * proposal equal to an open one answers with that proposal and `existed: true` (see `EditOutcome`). */
-  edit(room_id: string, actor: RoomActor, request: EditRequest, options?: EditOptions): Promise<Result<EditOutcome>>;
+  edit(room_id: string, actor: RoomActor, request: EditRequest): Promise<Result<EditOutcome>>;
 
   /** `proposal.decide`: approve (commit the proposal's batches, replayed as stored, with the proposal's id and the
    * approving user on every entry) or reject. An agent is refused with `FORBIDDEN`, whatever the authorize hook
@@ -178,4 +168,25 @@ export interface RoomService {
    * room, or older than the retained events. The promise rejects when the stored room is damaged (a stored
    * event or the snapshot no longer validates). */
   join(room_id: string, actor: RoomActor, since_seq: number | null, listener: RoomListener): Promise<Result<RoomSubscription>>;
+}
+
+/** The live link of a shared document: whoever holds `token` may view the document with no account. */
+export type ShareLink = { token: string; room_id: string; doc_name: string; created_by: RoomActor; created_at: string };
+
+/** The share links of a server. Links live in the room database, so they survive a restart and travel with its
+ * backup. A document has at most one live link, and a link ends with its document. */
+export interface ShareLinks {
+  /** The live link of a document, or `null`. */
+  shareOf(room_id: string, doc_name: string): ShareLink | null;
+
+  /** Make the link of a document, or answer the live one with `existed: true`. Fails as an unknown room or
+   * document does, and as any write does while the workspace is read-only. */
+  share(room_id: string, doc_name: string, by: RoomActor): Promise<Result<{ link: ShareLink; existed: boolean }>>;
+
+  /** End the live link of a document, also while the workspace is read-only. `false` when it had none. An ended
+   * token never resolves again. */
+  unshare(room_id: string, doc_name: string): boolean;
+
+  /** The live link a token names, or `null`: an unknown token and an ended one cannot be told apart. */
+  resolveShare(token: string): ShareLink | null;
 }

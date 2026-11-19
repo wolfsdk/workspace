@@ -132,3 +132,62 @@ describe("a watched actors file", () => {
     expect(await watchActorDirectory(join(dir, "missing.json"), () => {}).then(() => "watching", (e: unknown) => (e instanceof Error ? e.name : "?"))).toBe("UsageError");
   });
 });
+
+describe("the guest scope of an actors file", () => {
+  const DOCS = { docs: [{ room: "r1", doc: "brief.docx" }] };
+  const GUEST = { kind: "user", id: "gail", name: "Gail", guest: DOCS };
+
+  test("a guest user and an agent with a guest field are limited to their documents, and members to none", async () => {
+    await replace({ ta: ALICE, tg: GUEST, tr: { ...ROBOT, guest: { docs: [{ room: "r2", doc: "plan.xlsx" }] } } });
+    const { scopeOf } = (await watchActorDirectory(file, () => {})).current();
+    expect(scopeOf(ALICE)).toBeNull();
+    expect(scopeOf({ kind: "user", id: "gail", name: "Gail" })).toEqual({ access: "propose", docs: [{ room_id: "r1", doc_name: "brief.docx" }] });
+    expect(scopeOf(ROBOT)).toEqual({ access: "propose", docs: [{ room_id: "r2", doc_name: "plan.xlsx" }] });
+    expect(scopeOf({ kind: "user", id: "stranger", name: "S" })).toBeNull();
+  });
+
+  test("an agent of a guest inherits the scope, and an agent of a member does not", async () => {
+    const mine = { kind: "agent", id: "gail-bot", name: "Gail Bot", operator: { id: "gail", name: "Gail" } };
+    const hers = { kind: "agent", id: "alice-bot", name: "Alice Bot", operator: { id: "alice", name: "Alice" } };
+    await replace({ ta: ALICE, tg: GUEST, t1: mine, t2: hers });
+    const { scopeOf } = (await watchActorDirectory(file, () => {})).current();
+    expect(scopeOf({ kind: "agent", id: "gail-bot", name: "Gail Bot" })).toEqual({ access: "propose", docs: [{ room_id: "r1", doc_name: "brief.docx" }] });
+    expect(scopeOf({ kind: "agent", id: "alice-bot", name: "Alice Bot" })).toBeNull();
+  });
+
+  test("the scope follows a reload: a document added, and a guest made a member", async () => {
+    await replace({ tg: GUEST });
+    const watched = await watchActorDirectory(file, () => {});
+    const gail: RoomActor = { kind: "user", id: "gail", name: "Gail" };
+    await replace({ tg: { ...GUEST, guest: { docs: [...DOCS.docs, { room: "r1", doc: "two.docx" }] } } });
+    expect(watched.current().scopeOf(gail)?.docs).toHaveLength(2);
+    await replace({ tg: { kind: "user", id: "gail", name: "Gail" } });
+    expect(watched.current().scopeOf(gail)).toBeNull();
+  });
+
+  test("refuses a guest field that is empty, too long, misshapen or has unknown keys, and keeps the last good directory", async () => {
+    await replace({ ta: ALICE });
+    const log: string[] = [];
+    const watched = await watchActorDirectory(file, (line) => log.push(line));
+    const directory = watched.current();
+    const many = Array.from({ length: 51 }, (_, i) => ({ room: "r1", doc: `d${i}.docx` }));
+    const bad: unknown[] = [
+      { docs: [] },
+      { docs: many },
+      { docs: [{ room: "", doc: "a.docx" }] },
+      { docs: [{ room: "r1", doc: 7 }] },
+      { docs: [{ room: "r1", doc: "a.docx", extra: true }] },
+      { docs: DOCS.docs, extra: true },
+      { docs: "r1/a.docx" },
+      [],
+      null,
+    ];
+    for (const guest of bad) {
+      await replace({ ta: ALICE, tg: { ...GUEST, guest } });
+      expect(watched.current()).toBe(directory);
+    }
+    expect(log).toHaveLength(bad.length);
+    await replace({ ta: ALICE, tg: { ...GUEST, guest: { docs: many.slice(0, 50) } } });
+    expect(watched.current().scopeOf({ kind: "user", id: "gail", name: "Gail" })?.docs).toHaveLength(50);
+  });
+});

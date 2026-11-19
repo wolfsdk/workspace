@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { ApiError, WorkspaceApi } from "../src/lib/api.ts";
-import { displayListPage, snapshotBytes } from "./fixtures.ts";
+import { displayListPage, publicShare, SHARE_TOKEN, shareLink, snapshotBytes } from "./fixtures.ts";
 
 type Call = { url: string; init: RequestInit | undefined };
 
@@ -107,5 +107,54 @@ describe("WorkspaceApi", () => {
     expect(await broken.api.snapshot("q3", "memo.docx").catch((e: unknown) => e)).toBeInstanceOf(Error);
     const absent = fake(() => json(404, { error: { code: "NO_DOCUMENT", message: "no such document" } }));
     expect(await absent.api.snapshot("q3", "gone.docx").catch((e: unknown) => e)).toMatchObject({ status: 404, code: "NO_DOCUMENT" });
+  });
+
+  test("me names the guest scope, and a server that predates guests answers a member", async () => {
+    const scope = { docs: [{ room_id: "q3", doc_name: "memo.docx" }] };
+    const actor = { kind: "user", id: "bea", name: "Bea" } as const;
+    expect(await fake(() => json(200, { actor, guest: scope })).api.me()).toEqual({ actor, guest: scope });
+    expect(await fake(() => json(200, { actor, guest: null })).api.me()).toEqual({ actor, guest: null });
+    expect(await fake(() => json(200, { actor })).api.me()).toEqual({ actor, guest: null });
+  });
+
+  test("reads, makes and ends the share link of a document, escaping names", async () => {
+    const { api, calls } = fake((call) => (call.init?.method === "DELETE" ? new Response(null, { status: 204 }) : json(200, { share: shareLink({ doc_name: "Board memo.docx" }) })));
+    expect((await api.shareOf("q3", "Board memo.docx"))?.token).toBe(SHARE_TOKEN);
+    expect((await api.share("q3", "Board memo.docx")).doc_name).toBe("Board memo.docx");
+    await api.unshare("q3", "Board memo.docx");
+    expect(calls.map((c) => [c.init?.method ?? "GET", c.url])).toEqual([
+      ["GET", "http://127.0.0.1:8787/api/rooms/q3/docs/Board%20memo.docx/share"],
+      ["PUT", "http://127.0.0.1:8787/api/rooms/q3/docs/Board%20memo.docx/share"],
+      ["DELETE", "http://127.0.0.1:8787/api/rooms/q3/docs/Board%20memo.docx/share"],
+    ]);
+    expect(await fake(() => json(200, { share: null })).api.shareOf("q3", "memo.docx")).toBeNull();
+    const refused = fake(() => json(403, { error: { code: "FORBIDDEN", message: "a guest does not share" } }));
+    expect(await refused.api.share("q3", "memo.docx").catch((e: unknown) => e)).toMatchObject({ status: 403, code: "FORBIDDEN" });
+  });
+
+  test("reads what a link shows and its pages, and an ended link throws SHARE_NOT_FOUND", async () => {
+    const { api, calls } = fake((call) => (call.url.endsWith("/snapshot") ? new Response(snapshotBytes(displayListPage(1, "Hi"))) : json(200, { share: publicShare() })));
+    expect(await api.publicShare(SHARE_TOKEN)).toEqual(publicShare());
+    expect((await api.publicSnapshot(SHARE_TOKEN)).map((p) => p.page)).toEqual([1]);
+    expect(calls.map((c) => c.url)).toEqual([`http://127.0.0.1:8787/api/share/${SHARE_TOKEN}`, `http://127.0.0.1:8787/api/share/${SHARE_TOKEN}/snapshot`]);
+    const ended = fake(() => json(404, { error: { code: "SHARE_NOT_FOUND", message: "This link is not shared." } }));
+    expect(await ended.api.publicShare(SHARE_TOKEN).catch((e: unknown) => e)).toMatchObject({ status: 404, code: "SHARE_NOT_FOUND" });
+    expect(await ended.api.publicSnapshot(SHARE_TOKEN).catch((e: unknown) => e)).toMatchObject({ status: 404, code: "SHARE_NOT_FOUND" });
+  });
+
+  test("guests of a document are null where nothing lists them, and other refusals throw", async () => {
+    const guest = { id: "acct_bea", email: "bea@example.org", name: "Bea", added_at: "2026-11-18T19:20:00Z" };
+    const { api, calls } = fake((call) => (call.init?.method === "DELETE" ? new Response(null, { status: 204 }) : json(200, { guests: [guest], limit: 3 })));
+    expect(await api.shareGuests("q3", "Board memo.docx")).toEqual({ guests: [guest], limit: 3 });
+    await api.removeShareGuest("q3", "Board memo.docx", "acct_bea");
+    expect(calls.map((c) => [c.init?.method ?? "GET", c.url])).toEqual([
+      ["GET", "http://127.0.0.1:8787/-/share/guests?room=q3&doc=Board+memo.docx"],
+      ["DELETE", "http://127.0.0.1:8787/-/share/guests/acct_bea?room=q3&doc=Board+memo.docx"],
+    ]);
+    expect(await fake(() => json(404, { error: { code: "NOT_FOUND", message: "no route" } })).api.shareGuests("q3", "memo.docx")).toBeNull();
+    const appPage = fake(() => new Response("<!doctype html><title>Wolf Workspace</title>", { headers: { "content-type": "text/html" } }));
+    expect(await appPage.api.shareGuests("q3", "memo.docx")).toBeNull();
+    const refused = fake(() => json(403, { error: { code: "FORBIDDEN", message: "members only" } }));
+    expect(await refused.api.shareGuests("q3", "memo.docx").catch((e: unknown) => e)).toMatchObject({ status: 403 });
   });
 });

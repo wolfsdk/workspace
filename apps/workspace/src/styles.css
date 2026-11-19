@@ -336,6 +336,11 @@ kbd {
   background: var(--we-moved-bg);
 }
 
+.role--guest {
+  color: var(--we-warning);
+  background: var(--we-warning-bg);
+}
+
 /* ---- Controls ---------------------------------------------------------- */
 
 .button {
@@ -1673,6 +1678,161 @@ textarea.input {
   gap: var(--we-space-2);
 }
 
+/* The Share dialog: the link with Copy, the agent prompt, Stop sharing, and the guests behind a hosting front. */
+
+.share-dialog {
+  width: min(480px, calc(100% - 32px));
+  max-height: calc(88vh - 32px);
+  overflow-y: auto;
+}
+
+.share-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--we-space-3);
+}
+
+.share-doc {
+  overflow-wrap: anywhere;
+}
+
+.share-link {
+  display: flex;
+  gap: var(--we-space-2);
+}
+
+.share-link .input {
+  flex: 1;
+  min-width: 0;
+}
+
+.share-dialog .field .hint {
+  margin: 0;
+}
+
+.share-prompt-button {
+  justify-self: start;
+}
+
+.share-confirm {
+  flex-wrap: wrap;
+}
+
+.share-guests {
+  padding-top: var(--we-space-4);
+  border-top: 1px solid var(--we-divider);
+}
+
+.share-guest-list {
+  display: grid;
+  gap: var(--we-space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.share-guest {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--we-space-3);
+  padding: var(--we-space-3);
+  border: 1px solid var(--we-border);
+  border-radius: var(--we-radius);
+  background: var(--we-bg);
+}
+
+.share-guest-who {
+  display: grid;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.share-guest-email {
+  color: var(--we-muted);
+  font-size: var(--we-text-sm);
+}
+
+/* The page of a share link: no rails and no room, the painted pages, and the agent prompt beside them (above them on
+ * a phone, where the whole page scrolls). */
+
+.shared-page {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.shared-topbar {
+  flex: none;
+  height: var(--topbar-h);
+}
+
+.shared-empty {
+  flex: 1;
+  display: grid;
+  place-items: center;
+  padding: var(--we-space-6);
+}
+
+.shared-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+
+.shared-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.shared-main .stage {
+  flex: 1;
+}
+
+.shared-byline {
+  margin: 0;
+  padding: var(--we-space-3) var(--we-space-4) 0;
+  background: var(--we-bg);
+  color: var(--we-muted);
+  font-size: var(--we-text-sm);
+}
+
+.shared-byline strong {
+  color: var(--we-fg);
+}
+
+.shared-agent {
+  flex: none;
+  display: grid;
+  align-content: start;
+  gap: var(--we-space-4);
+  width: var(--rail-assistant);
+  padding: var(--we-space-5);
+  border-left: 1px solid var(--we-border);
+  background: var(--we-bg);
+  overflow-y: auto;
+}
+
+.shared-agent-title {
+  margin: 0;
+  font-size: var(--we-text-lg);
+}
+
+.shared-prompt {
+  font-size: var(--we-text-sm);
+  overflow-wrap: anywhere;
+  resize: none;
+}
+
+/* The painter sizes each canvas to the page at 96 dpi inline; on a narrow screen the page shrinks to fit instead. */
+.shared-page .snapshot-page {
+  max-width: 100%;
+  height: auto !important;
+}
+
 .switcher {
   width: min(560px, calc(100% - 32px));
   border: 1px solid var(--we-border);
@@ -1803,5 +1963,34 @@ textarea.input {
   .search-button span,
   .crumbs {
     display: none;
+  }
+}
+
+@media (max-width: 720px) {
+  .shared-page {
+    height: auto;
+    min-height: 100%;
+  }
+
+  .shared-body {
+    flex-direction: column;
+  }
+
+  .shared-agent {
+    order: -1;
+    width: auto;
+    padding: var(--we-space-4);
+    border-left: 0;
+    border-bottom: 1px solid var(--we-border);
+  }
+
+  .shared-main .stage-canvas.snapshot-pages {
+    overflow: visible;
+    padding: var(--we-space-3);
+  }
+
+  .shared-page .banner-meta {
+    flex-wrap: wrap;
+    gap: var(--we-space-1) var(--we-space-3);
   }
 }
