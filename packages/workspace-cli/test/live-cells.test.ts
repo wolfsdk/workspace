@@ -7,7 +7,8 @@ import { join } from "node:path";
 import type { RoomActor, RoomSessionEntry } from "@wolfsdk/protocol/workspace";
 import { type ReadOnlyMode, RoomServer, scopedService } from "@wolfsdk/server";
 import { startWorkspaceServer, tokenOf, type WorkspaceServer, type WorkspaceServerOptions } from "../src/http.ts";
-import { FORMULA_CLASS, formulaProblem, LiveCells, type LiveCaller, type LiveReply, PRESENCE_MAX, PRESENCE_TTL_MS } from "../src/live-cells.ts";
+import { FORMULA_CLASS, formulaProblem, LiveCells, PRESENCE_MAX, PRESENCE_TTL_MS } from "../src/live-cells.ts";
+import type { LiveCaller, LiveReply } from "../src/live-shared.ts";
 import { GridEngine, type Grid, gridBytes, GridPool, gridSha256 } from "./fixtures/grid-engine.ts";
 
 setDefaultTimeout(120_000);

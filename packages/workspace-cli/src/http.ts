@@ -58,7 +58,9 @@ import workspacePackage from "../package.json" with { type: "json" };
 import { type PlanReadOnly, planReadOnlyMode } from "./errors.ts";
 import { type ExportRefusal, exportResponse, planExport } from "./export.ts";
 import { directoryPackManifests, directoryPackRefresher } from "./pack-refresher.ts";
-import { LiveCells, type LiveCellsOptions, type LiveReply } from "./live-cells.ts";
+import { LiveCells, type LiveCellsOptions } from "./live-cells.ts";
+import type { LiveReply } from "./live-shared.ts";
+import { LiveSlideText, type LiveSlideTextOptions, MAX_WRITE_BYTES as MAX_SLIDE_TEXT_WRITE_BYTES } from "./live-slide-text.ts";
 
 export type Authenticate = (request: Request) => RoomActor | null | Promise<RoomActor | null>;
 
@@ -95,6 +97,9 @@ export type WorkspaceServerOptions = {
   /** The engine and the attested workbooks of live cells: `GET`, `PUT` and `POST /api/rooms/<room>/docs/<doc>/live-cells`, the
    * cell-by-cell collaboration on the head of an XLSX document (see `live-cells.ts`). Without it those routes answer 501. */
   liveCells?: LiveCellsOptions | null;
+  /** The engine and the attested decks of live slide text: `GET` and `PUT /api/rooms/<room>/docs/<doc>/live-slide-text`, the
+   * run-by-run collaboration on the text of the shapes of a PPTX document (see `live-slide-text.ts`). Without it those routes answer 501. */
+  liveSlideText?: LiveSlideTextOptions | null;
   /** The engine hooks of the MCP tools (`inspector`, `renderer`, `packs`). The MCP endpoint is always on. */
   mcp?: Omit<WorkspaceToolsOptions, "service" | "roomId" | "readOnly">;
   /** The pack `GET /api/pack` checks against the heads of a room (`?room=`, else `defaultRoom`, else the only room;
@@ -234,6 +239,27 @@ function failed(error: RoomFailure | ExportRefusal): Response {
   return problem(FAILURE_STATUS[error.code] ?? 400, error.code, error.message, extra);
 }
 
+/** The text of the body of `request`, or `null` when it is more than `limit` bytes: read no further than that, whatever the request says it holds. */
+async function boundedText(request: Request, limit: number): Promise<string | null> {
+  const declared = Number(request.headers.get("content-length"));
+  if (Number.isFinite(declared) && declared > limit) return null;
+  const reader = request.body?.getReader();
+  if (reader === undefined) return "";
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    size += value.length;
+    if (size > limit) {
+      await reader.cancel();
+      return null;
+    }
+    chunks.push(value);
+  }
+  return new Blob(chunks as BlobPart[]).text();
+}
+
 /** `name` for a `Content-Disposition` header, safe for any file name. */
 const disposition = (name: string): string => `inline; filename*=UTF-8''${encodeURIComponent(name)}`;
 
@@ -307,6 +333,7 @@ const MCP_PLACEHOLDER: RoomActor = { kind: "agent", id: "wolf-workspace-mcp", na
 export function startWorkspaceServer(options: WorkspaceServerOptions): WorkspaceServer {
   const { service, authenticate } = options;
   const liveCells = options.liveCells ? new LiveCells(service, options.liveCells) : null;
+  const liveSlideText = options.liveSlideText ? new LiveSlideText(service, options.liveSlideText) : null;
   const scopeOf: ScopeOf = options.scopeOf ?? (() => null);
   const staticDir = options.staticDir ? resolve(options.staticDir) : null;
   const wasmDir = options.wasmDir ? resolve(options.wasmDir) : null;
@@ -524,9 +551,17 @@ export function startWorkspaceServer(options: WorkspaceServerOptions): Workspace
     return first?.workspace_id ?? "default";
   }
 
-  async function readJson(request: Request): Promise<Record<string, unknown> | Response> {
+  /** The body of `request` as a JSON object, or the answer to send. With a `limit`, a body of more bytes is refused as it is read. */
+  async function readJson(request: Request, limit?: number): Promise<Record<string, unknown> | Response> {
     try {
-      const body: unknown = await request.json();
+      let body: unknown;
+      if (limit === undefined) {
+        body = await request.json();
+      } else {
+        const text = await boundedText(request, limit);
+        if (text === null) return problem(413, "BAD_REQUEST", `the body is more than ${limit} bytes`);
+        body = JSON.parse(text);
+      }
       if (typeof body === "object" && body !== null && !Array.isArray(body)) return body as Record<string, unknown>;
     } catch {
       // Answered below.
@@ -627,12 +662,34 @@ export function startWorkspaceServer(options: WorkspaceServerOptions): Workspace
       if (body instanceof Response) return body;
       reply = await (method === "PUT" ? liveCells.put(caller, body) : liveCells.post(caller, body));
     }
+    return liveResponse(reply);
+  }
+
+  /** What a live editor answered, as the response: its JSON body, its empty 204, its error, or the failure of the room service. */
+  function liveResponse(reply: LiveReply): Response {
     if ("failure" in reply) return failed(reply.failure);
     if ("error" in reply) {
       const { code, message, ...extra } = reply.error;
       return problem(reply.status, code, message, extra);
     }
     return reply.status === 204 ? new Response(null, { status: 204, headers: { "cache-control": "no-store" } }) : json(200, reply.body);
+  }
+
+  /** `GET` and `PUT .../docs/<doc>/live-slide-text`. They are for members, as live cells is: a guest or an agent is refused. A write
+   * is refused as every write is while the workspace is read-only, before its body is read, and a body is read up to a few
+   * kilobytes only. */
+  async function liveSlideTextRoute(request: Request, roomId: string, docName: string, actor: RoomActor, scope: AccessScope | null): Promise<Response> {
+    const method = request.method;
+    if (method !== "GET" && method !== "PUT") return problem(405, "BAD_REQUEST", "read the text with GET, write one run with PUT", {}, { allow: "GET, PUT" });
+    if (scope !== null || actor.kind !== "user") return problem(403, "FORBIDDEN", "live slide text is for the members of the workspace, not for guests or agents");
+    if (liveSlideText === null) return problem(501, "NO_LIVE_SLIDE_TEXT", "this server has no engine for live slide text: start it with an engine");
+    const refused = refusal();
+    if (refused !== null && method !== "GET") return failed(refused);
+    const caller = { roomId, doc: docName, actor, refusal: refused };
+    if (method === "GET") return liveResponse(await liveSlideText.get(caller, new URL(request.url).searchParams));
+    const body = await readJson(request, MAX_SLIDE_TEXT_WRITE_BYTES);
+    if (body instanceof Response) return body;
+    return liveResponse(await liveSlideText.put(caller, body));
   }
 
   async function readPreview(roomId: string, actor: RoomActor, proposalId: string): Promise<Response> {
@@ -852,6 +909,7 @@ export function startWorkspaceServer(options: WorkspaceServerOptions): Workspace
       if (kind === "docs" && parts.length === 5 && leaf === "head" && item && (method === "GET" || method === "HEAD")) return readHead(request, roomId, actor, item);
       if (kind === "docs" && parts.length === 5 && leaf === "snapshot" && item && method === "GET") return readSnapshot(request, roomId, actor, item);
       if (kind === "docs" && parts.length === 5 && leaf === "live-cells" && item) return liveCellsRoute(request, roomId, item, actor, scope);
+      if (kind === "docs" && parts.length === 5 && leaf === "live-slide-text" && item) return liveSlideTextRoute(request, roomId, item, actor, scope);
       if (kind === "proposals" && parts.length === 5 && leaf === "preview" && item && method === "GET") return readPreview(roomId, actor, item);
     }
     return problem(404, "NOT_FOUND", `no route ${method} ${path}`);

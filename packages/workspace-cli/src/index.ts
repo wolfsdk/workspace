@@ -17,6 +17,8 @@ export {
   type WorkspaceServer,
   type WorkspaceServerOptions,
 } from "./http.ts";
-export { LiveCells, formulaProblem, FORMULA_CLASS, type CellValue, type LiveCaller, type LiveCellsOptions, type LiveReply } from "./live-cells.ts";
+export { LiveCells, formulaProblem, FORMULA_CLASS, type CellValue, type LiveCellsOptions } from "./live-cells.ts";
+export type { LiveCaller, LiveReply } from "./live-shared.ts";
+export { LiveSlideText, type LiveSlideTextOptions } from "./live-slide-text.ts";
 export { directoryPackRefresher, type DirectoryPackRefresherOptions } from "./pack-refresher.ts";
 export { ASSISTANT_KEY_VARIABLE, EXIT_ERROR, EXIT_FRESH, EXIT_STALE, runCli, type CliIo } from "./run.ts";

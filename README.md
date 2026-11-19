@@ -26,6 +26,16 @@ Open the same `.xlsx` as two workspace members and choose **Live cells** to see 
 
 Use numbers, text, booleans, blank cells, or arithmetic formulas such as `=B3*2`. For new formulas, use numbers and same-sheet cell references; functions, ranges, and cross-sheet references are outside this first editing mode. After a server restart or an edit made outside Live cells, the current workbook may need operator review again.
 
+### Edit text together in PowerPoint (source build)
+
+Open a `.pptx` as a room member and choose **Live slide text**. Pick a shape and edit one text run at a time. Two members can edit different runs of the same shape from the same revision, keeping each run's formatting. If both change the same run, compare the saved text with your draft before starting a fresh edit. Moving, resizing, and deleting shapes are outside this mode.
+
+Enter a single nonempty line of up to 4,096 UTF-16 code units per run. Use the proposal editor for edits that span runs or change the slide structure.
+
+Uploaded decks are read-only in this mode by default. To allow edits, review the exact deck for ordinary text shapes and runs with unambiguous addresses, without fields or hyperlinks. Pass its digest to `serve` with `--live-slide-text-attest <sha256>`. See the [two-browser PowerPoint check](CONTRIBUTING.md#two-browser-powerpoint-check).
+
+After a server restart or an edit outside Live slide text, review the new deck digest before enabling writes again.
+
 ## What is open source and what is not
 
 Wolf Workspace is not open source as a whole. The code in this repository is open source. The Wolf

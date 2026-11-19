@@ -60,9 +60,9 @@ export type LiveSheet = { id: number; name: string };
 /** Another member and the cell they are on, while their announcement of it lasts. */
 export type LivePeer = { id: string; name: string; sheet: number; a1: string };
 
-/** Why no cell of a workbook may be written live, in the server's words: `LICENSE_LIMIT` (a read-only workspace),
- * `LIVE_CELLS_UNATTESTED` (bytes the server has not been told are safe to write cell by cell),
- * `LIVE_CELLS_UNSUPPORTED`. */
+/** Why nothing of a document may be written live, in the server's words: `LICENSE_LIMIT` (a read-only workspace),
+ * `LIVE_CELLS_UNATTESTED` or `LIVE_SLIDE_TEXT_UNATTESTED` (bytes the server has not been told are safe to write live),
+ * `LIVE_CELLS_UNSUPPORTED` or `LIVE_SLIDE_TEXT_UNSUPPORTED`. */
 export type LiveRefusal = { code: string; message: string };
 
 /** A window of one sheet at one revision of the head, with the other members on its cells. `editable` false, with
@@ -82,6 +82,28 @@ export type LiveCells = {
 /** One cell written over what a read at `revision` found in it (`expected`). A draft reapplied over a newer read also
  * sends `draftRevision`, the revision of the read it was typed on: the sheets must not have changed since then either. */
 export type LiveCellWrite = { revision: number; draftRevision?: number; sheet: number; a1: string; expected: CellValue; value: CellValue };
+
+/** A shape of a deck whose text may be written run by run: its native id (`slide:#256/shape:#2`) and a label that
+ * names its slide. */
+export type LiveSlideShape = { id: string; label: string };
+
+/** One text run of a shape: its native id and its text. The run's formatting stays in the deck and is not read here. */
+export type LiveSlideRun = { id: string; text: string };
+
+/** The text runs of one shape of a PPTX head at one revision, and the shapes that may be read so. `shape` is the shape
+ * read (null, with no runs, for a deck with none). `editable` false, with the `refusal` that says why, is a deck the
+ * server reads but does not let anyone write here; it can change from one read to the next. */
+export type LiveSlideText = {
+  revision: number;
+  shapes: LiveSlideShape[];
+  shape: string | null;
+  runs: LiveSlideRun[];
+  editable: boolean;
+  refusal?: LiveRefusal | null;
+};
+
+/** One run (`target`, its native id) written with `text` over what a read at `revision` found in it (`expected`). */
+export type LiveSlideRunWrite = { revision: number; target: string; expected: string; text: string };
 
 /** A refused call: the `error.code` and `error.message` of the body, and the HTTP status. */
 export class ApiError extends Error {
@@ -260,6 +282,29 @@ export class WorkspaceApi {
       headers: { "content-type": "application/json" },
       body: JSON.stringify(at),
     });
+  }
+
+  /** The text runs of one shape of a PPTX head: `GET /api/rooms/<room>/docs/<doc>/live-slide-text?shape=`, for a
+   * member. `shape` null asks for the first shape that may be read; the answer names the shape it read. A shape no
+   * longer in the deck throws `UNKNOWN_SHAPE` (404). Never from the HTTP cache: the page reads it again to follow the
+   * room. */
+  liveSlideText(roomId: string, doc: string, shape: string | null): Promise<LiveSlideText> {
+    const query = shape === null ? "" : `?${new URLSearchParams({ shape })}`;
+    return this.#json(`${this.#docPath(roomId, doc)}/live-slide-text${query}`, { cache: "no-store" });
+  }
+
+  /** Write one text run over what a read found in it. `PUT .../live-slide-text` answers the revision the write made.
+   * A run written since that read, even back to the same text, throws `RUN_CONFLICT` (409), and runs of its shape that
+   * changed `STRUCTURE_CONFLICT` (409); a deck no one may write here `LICENSE_LIMIT` (402) or
+   * `LIVE_SLIDE_TEXT_UNATTESTED` (403); text or a run the server does not take `BAD_REQUEST` (400) or
+   * `RUN_UNSUPPORTED` (422). */
+  async writeLiveSlideRun(roomId: string, doc: string, write: LiveSlideRunWrite): Promise<number> {
+    const body = await this.#json<{ revision: number }>(`${this.#docPath(roomId, doc)}/live-slide-text`, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(write),
+    });
+    return body.revision;
   }
 
   /** What a share link shows. `GET /api/share/<token>` needs no credential; an unknown or ended link throws

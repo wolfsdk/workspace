@@ -188,6 +188,16 @@ cat "$DATA/out/head.txt"      # the blank clause now holds the new text
 inside `ops` (`replace-text` here) are the engine's Agent API; the workspace passes them through
 and does not interpret them.
 
+## Two-browser PowerPoint check
+
+Build the UI with `bun run build`. With the released native `wolf` executable and Playwright's Chromium and Firefox installed, run:
+
+```sh
+WOLF_ENGINE="$WOLF" LIVE_PROOF_DIR="$PWD/data/live-slide-proof" bun scripts/smoke-live-slide-text.ts
+```
+
+Set `CHROMIUM_PATH` or `FIREFOX_PATH` if using a browser installed outside Playwright's defaults. The check starts a disposable local room and admits only the reviewed `fixtures/pptx/mixed-runs.pptx` digest. Two members edit separate runs of one shape and then compete for the same run. The check downloads the head, compares the bytes with the server copy, and verifies bold `West` and italic `Coast` through the native engine. To check Office compatibility separately, open `collaborative-result.pptx` from the proof directory in Microsoft PowerPoint.
+
 ## Tests and gates
 
 Run only what you touched while you work:

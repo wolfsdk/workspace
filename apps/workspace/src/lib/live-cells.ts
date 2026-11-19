@@ -11,6 +11,7 @@
 // shows what it says.
 import type { RoomActor } from "@wolfsdk/protocol/workspace";
 import { ApiError, type CellValue, type LiveCell, type LiveCells, type LivePeer, type LiveRefusal, type LiveSheet, type WorkspaceApi } from "./api.ts";
+import { follow } from "./live-follow.ts";
 
 const message = (e: unknown): string => (e instanceof Error ? e.message : String(e));
 
@@ -20,9 +21,6 @@ export const VIEW_ROWS = 15;
 /** The last column (XFD) and row of a worksheet, from 0. */
 const LAST_COL = 16_383;
 const LAST_ROW = 1_048_575;
-/** How often the open grid reads its window again, and how far apart the reads get while the server does not answer. */
-export const POLL_MS = 5_000;
-export const POLL_MAX_MS = 30_000;
 /** How often the cell a person stays on is announced again: the server forgets an announcement after 30 seconds. */
 export const ANNOUNCE_MS = 15_000;
 /** Refusals of a write that hold for every cell of the workbook, not for the one written. */
@@ -597,34 +595,18 @@ export class LiveCellsModel {
     return this.#announcing;
   }
 
-  /** Follow the room while the grid is open: read the window every `POLL_MS` (longer apart while the server does not
-   * answer, and not while the page is hidden), announce the selected cell again before it expires, and read at once
-   * when the browser is back online or the page shows again. Returns the stop. */
+  /** Follow the room while the grid is open (see `follow`), and announce the selected cell again before it expires.
+   * Returns the stop. */
   start(): () => void {
-    const hidden = (): boolean => document.visibilityState === "hidden";
-    let timer: ReturnType<typeof setTimeout>;
-    const tick = (): void => {
-      if (!hidden()) {
+    return follow({
+      tick: () => {
         if (this.#reading === 0) void this.refresh();
         if (Date.now() - this.#announcedAt >= ANNOUNCE_MS) void this.announce();
-      }
-      timer = setTimeout(tick, Math.min(POLL_MAX_MS, POLL_MS * 2 ** this.#failures));
-    };
-    timer = setTimeout(tick, POLL_MS);
-    const online = (): void => void this.retry();
-    const offline = (): void => this.#set({ offline: true });
-    const shown = (): void => {
-      if (!hidden()) void this.refresh();
-    };
-    if (!navigator.onLine) offline();
-    addEventListener("online", online);
-    addEventListener("offline", offline);
-    document.addEventListener("visibilitychange", shown);
-    return () => {
-      clearTimeout(timer);
-      removeEventListener("online", online);
-      removeEventListener("offline", offline);
-      document.removeEventListener("visibilitychange", shown);
-    };
+      },
+      failures: () => this.#failures,
+      online: () => void this.retry(),
+      offline: () => this.#set({ offline: true }),
+      shown: () => void this.refresh(),
+    });
   }
 }

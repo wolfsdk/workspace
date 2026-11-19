@@ -52,6 +52,7 @@ const USAGE = `wolfsdk-workspace: check and refresh packs, serve the workspace, 
                             [--port <n>] [--host <name>] [--pool <n>] [--static-dir <dir>]
                             [--wasm-dir <dir>] [--pack <dir>] [--default-room <id>] [--workspace-id <id>] [--share-connect <path>]
                             [--live-cells-attest <sha256>]...
+                            [--live-slide-text-attest <sha256>]...
                             [--plan-seats <n|unlimited> --plan-workspaces <n|unlimited> --plan-upgrade <text> [--plan-name <name>]]
                             [--read-only-reason <text> --read-only-upgrade <text>]
                             [--plan-record <file>]
@@ -117,6 +118,13 @@ restore   rebuild a workspace from a backup into an empty place: the newest snap
                       readable. A write of live cells (a typed value, or a formula of numbers, same-sheet A1 references,
                       + - * / ^ and parentheses) leaves the workbook writable until something else edits it; a restart
                       forgets that, so attest the head again.
+--live-slide-text-attest <sha256>
+                      repeatable. The sha256 of a PPTX file that you reviewed as an ordinary text deck, with no special
+                      text, fields, hyperlinks, groups or ambiguous shape and run identity: the exact bytes that live
+                      slide text may write run by run. The engine does not report those, so no uploaded deck is
+                      writable there by default; the others stay readable. A write (the text of one run, with the
+                      formatting of the run and of its neighbors left as it is) leaves the deck writable until something
+                      else edits it; a restart forgets that, so attest the head again.
 --plan-seats <n|unlimited>, --plan-workspaces <n|unlimited>
                       a cap of a plan under the limits of the engine licence: the server admits the smaller of
                       the two. A refusal that the plan caused says which limit, what would be one more, and
@@ -180,6 +188,7 @@ const SERVE_OPTIONS = {
   "workspace-id": { type: "string" },
   "share-connect": { type: "string" },
   "live-cells-attest": { type: "string", multiple: true },
+  "live-slide-text-attest": { type: "string", multiple: true },
   "plan-seats": { type: "string" },
   "plan-workspaces": { type: "string" },
   "plan-name": { type: "string" },
@@ -515,6 +524,10 @@ async function runServe(args: string[], io: CliIo, env: BackupEnv = process.env)
     if (!/^[0-9a-fA-F]{64}$/.test(digest)) throw new UsageError(`--live-cells-attest takes the sha256 of a workbook: 64 hexadecimal digits, not ${JSON.stringify(digest)}`);
     return digest.toLowerCase();
   });
+  const slideTextAttested = (values["live-slide-text-attest"] ?? []).map((digest) => {
+    if (!/^[0-9a-fA-F]{64}$/.test(digest)) throw new UsageError(`--live-slide-text-attest takes the sha256 of a deck: 64 hexadecimal digits, not ${JSON.stringify(digest)}`);
+    return digest.toLowerCase();
+  });
   const planCap = planCapOf(values);
   const readOnly = readOnlyOf(values);
   const assistant = assistantOf(values, db, env);
@@ -568,6 +581,7 @@ async function runServe(args: string[], io: CliIo, env: BackupEnv = process.env)
     wasmDir,
     snapshot: engineSnapshot(pool),
     liveCells: { pool, attested },
+    liveSlideText: { pool, attested: slideTextAttested },
     mcp: { inspector: engineInspector(pool), renderer: engineRenderer(pool) },
     pack: packDir === null ? null : { dir: packDir, evaluator: new PoolXlsxEvaluator(pool), engine: documents },
     defaultRoom,

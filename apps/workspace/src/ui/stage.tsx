@@ -3,21 +3,23 @@
 // document and sends the local edits as a commit or a proposal; in review mode it shows an open proposal over the
 // head it was made against, change by change, and its decision goes back to the room. Agent activity of the
 // document lands on the element's presence bar as it happens. A user who is a member may open an XLSX head as live
-// cells instead: the element goes, and the server reads and writes the cells, see `live-cells.tsx`. A shared link
-// (`shareMode`) has no element and no engine: its stage paints the server's display-list snapshot instead, see
-// `snapshot-stage.tsx`.
+// cells, or a PPTX head as live slide text, instead: the element goes, and the server reads and writes the cells or
+// the text runs, see `live-cells.tsx` and `live-slide-text.tsx`. A shared link (`shareMode`) has no element and no
+// engine: its stage paints the server's display-list snapshot instead, see `snapshot-stage.tsx`.
 import type { RoomActivityEvent, WolfReviewElement, WolfReviewSubmitDetail } from "@wolfsdk/review";
 import type { EngineSource } from "@wolfsdk/review";
 import type { RoomActor, RoomProposal, RoomServerEvent } from "@wolfsdk/protocol/workspace";
 import { useEffect, useMemo, useRef, useState } from "preact/hooks";
 import { ApiError, type WorkspaceApi } from "../lib/api.ts";
 import { LiveCellsModel } from "../lib/live-cells.ts";
+import { LiveSlideTextModel } from "../lib/live-slide-text.ts";
 import { type Page, type RoomClient, RoomRequestError } from "../lib/room-client.ts";
 import { type ActivityItem, type DocumentSummary, presenceFor, proposalSize } from "../lib/room-state.ts";
 import { batchFromSession, isActivityFor, isOwnCommit, isOwnNewProposal, outcomeOf, reviewInputOf } from "../lib/review.ts";
 import { isReviewable, shortSha, type Theme } from "../lib/session.ts";
 import { ActorBadge, downloadBytes, EmptyState, FormatPill, Icon, plural, type Toast } from "./common.tsx";
 import { LiveCellsStage } from "./live-cells.tsx";
+import { LiveSlideTextStage } from "./live-slide-text.tsx";
 import { SharedSnapshotStage } from "./snapshot-stage.tsx";
 
 export type StageProps = {
@@ -58,17 +60,20 @@ export function Stage(props: StageProps) {
 }
 
 /** The stage of a member or a guest: the document in `<wolf-review>`, or, for a user who is a member, an XLSX head as
- * live cells. Live cells keep their drafts while a proposal of the same document is under review, and the page counts
- * them with the element's local changes before anything drops them. */
+ * live cells or a PPTX head as live slide text. Either keeps its drafts while a proposal of the same document is under
+ * review, and the page counts them with the element's local changes before anything drops them. */
 function MemberStage(props: StageProps) {
   const { api, roomId, actor, doc, proposal } = props;
   const latest = useRef(props);
   latest.current = props;
-  const key = roomId !== null && doc !== null && doc.format === "xlsx" ? `${roomId}\n${doc.name}` : null;
-  /** The document open as live cells, by `key`. */
+  const key = roomId !== null && doc !== null && (doc.format === "xlsx" || doc.format === "pptx") ? `${roomId}\n${doc.name}` : null;
+  /** The document open live, by `key`. */
   const [live, setLive] = useState<string | null>(null);
   const liveKey = live !== null && live === key ? live : null;
-  const model = useMemo(() => (liveKey === null ? null : new LiveCellsModel(api, roomId!, doc!.name, actor)), [liveKey, api]);
+  const model = useMemo(
+    () => (liveKey === null ? null : doc!.format === "pptx" ? new LiveSlideTextModel(api, roomId!, doc!.name) : new LiveCellsModel(api, roomId!, doc!.name, actor)),
+    [liveKey, api],
+  );
   const dirty = useRef({ editor: 0, drafts: 0 });
   const report = (): void => latest.current.onDirty(dirty.current.editor + dirty.current.drafts);
 
@@ -83,7 +88,7 @@ function MemberStage(props: StageProps) {
     };
     if (model === null) return count(0);
     count(Object.keys(model.state.drafts).length);
-    return model.subscribe((state) => {
+    return model.subscribe((state: { drafts: Readonly<Record<string, unknown>> }) => {
       const drafts = Object.keys(state.drafts).length;
       if (drafts !== dirty.current.drafts) count(drafts);
     });
@@ -92,14 +97,18 @@ function MemberStage(props: StageProps) {
   const openLive = (): void => {
     if (key === null || doc === null) return;
     const local = dirty.current.editor;
-    if (local > 0 && !confirm(`Discard ${plural(local, "local change", "local changes")} to ${doc.name} and open its live cells?`)) return;
+    const what = doc.format === "pptx" ? "live slide text" : "live cells";
+    if (local > 0 && !confirm(`Discard ${plural(local, "local change", "local changes")} to ${doc.name} and open its ${what}?`)) return;
     dirty.current.editor = 0;
     report();
     props.onSelection(null);
     setLive(key);
   };
 
-  if (model !== null && doc !== null && proposal === null) return <LiveCellsStage model={model} doc={doc} onClose={() => setLive(null)} />;
+  if (model !== null && doc !== null && proposal === null) {
+    const close = (): void => setLive(null);
+    return model instanceof LiveSlideTextModel ? <LiveSlideTextStage model={model} doc={doc} onClose={close} /> : <LiveCellsStage model={model} doc={doc} onClose={close} />;
+  }
   const member = props.guest !== true && actor.kind === "user";
   return (
     <EditorStage
@@ -108,12 +117,12 @@ function MemberStage(props: StageProps) {
         dirty.current.editor = n;
         report();
       }}
-      onLiveCells={member && key !== null && proposal === null ? openLive : undefined}
+      onLive={member && key !== null && proposal === null ? openLive : undefined}
     />
   );
 }
 
-function EditorStage(props: StageProps & { onLiveCells?: () => void }) {
+function EditorStage(props: StageProps & { onLive?: () => void }) {
   const { api, client, roomId, actor, doc, proposal } = props;
   const host = useRef<HTMLDivElement>(null);
   const latest = useRef(props);
@@ -425,13 +434,23 @@ function EditorStage(props: StageProps & { onLiveCells?: () => void }) {
             </span>
           </div>
           <div class="banner-actions">
-            {props.onLiveCells ? (
+            {props.onLive && format === "pptx" ? (
+              <button
+                type="button"
+                class="button button--small button--quiet"
+                data-testid="live-slide-text-open"
+                title="Read and write the text of this deck's shapes run by run, with the other members, without the engine in this page"
+                onClick={props.onLive}
+              >
+                Live slide text
+              </button>
+            ) : props.onLive ? (
               <button
                 type="button"
                 class="button button--small button--quiet"
                 data-testid="live-cells-open"
                 title="Read and write the cells of this head one by one, with the other members, without the engine in this page"
-                onClick={props.onLiveCells}
+                onClick={props.onLive}
               >
                 Live cells
               </button>
