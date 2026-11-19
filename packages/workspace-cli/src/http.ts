@@ -469,15 +469,18 @@ export function startWorkspaceServer(options: WorkspaceServerOptions): Workspace
         actor: MCP_PLACEHOLDER,
         ...(options.readOnly === undefined ? {} : { readOnly: options.readOnly }),
       });
-      if (options.readOnly === undefined && options.planReadOnly !== undefined) {
-        // The tools of a server keep the mode they were made with, and a session keeps its server. So each call asks
-        // the plan record, and while it holds a mark the call goes to tools made with that mode: they refuse a write
-        // tool before anything else, as with a fixed mode, and serve every read the same. The sessions, and the
-        // assistant, which calls these tools too, see the change on their next call.
-        const writable = server.tools.call.bind(server.tools);
-        server.tools.call = (agent, call) => {
-          const mode = readOnlyNow();
-          return mode === null ? writable(agent, call) : new WorkspaceTools({ ...tools, readOnly: mode }).call(agent, call);
+      const scopedPacks = options.scopeOf !== undefined && (linkedPacks !== undefined || linkedManifests !== undefined);
+      const dynamicMode = options.readOnly === undefined && options.planReadOnly !== undefined;
+      if (scopedPacks || dynamicMode) {
+        const { packs: _packs, packManifests: _manifests, ...withoutPacks } = tools;
+        const guestTools = new WorkspaceTools({ ...withoutPacks, ...(options.readOnly === undefined ? {} : { readOnly: options.readOnly }) });
+        const memberCall = server.tools.call.bind(server.tools);
+        server.tools.call = async (agent, call) => {
+          // Scope and plan can change while an MCP session remains open. Resolve both for the authenticated actor.
+          const guest = scopedPacks && (await scopeOf(agent)) !== null;
+          const mode = dynamicMode ? readOnlyNow() : null;
+          if (mode !== null) return new WorkspaceTools({ ...(guest ? withoutPacks : tools), readOnly: mode }).call(agent, call);
+          return guest ? guestTools.call(agent, call) : memberCall(agent, call);
         };
       }
       room = { server, handler: createMcpHttpHandler({ server, authenticate }) };
@@ -760,8 +763,10 @@ export function startWorkspaceServer(options: WorkspaceServerOptions): Workspace
     const shares = options.shares;
     if (!shares) return problem(404, "NOT_FOUND", "this server keeps no share links");
     const method = request.method;
+    if (method !== "GET" && method !== "PUT" && method !== "DELETE") return problem(405, "BAD_REQUEST", "use GET, PUT or DELETE", {}, { allow: "GET, PUT, DELETE" });
+    const room = await service.getRoom(roomId, actor);
+    if (!room.ok) return failed(room.error);
     if (method === "GET") return json(200, { share: ((link) => (link === null ? null : shareOf(link)))(shares.shareOf(roomId, docName)) });
-    if (method !== "PUT" && method !== "DELETE") return problem(405, "BAD_REQUEST", "use GET, PUT or DELETE", {}, { allow: "GET, PUT, DELETE" });
     // Ending a link is never refused: a workspace that has gone read-only can still stop sharing.
     if (method === "DELETE") {
       shares.unshare(roomId, docName);

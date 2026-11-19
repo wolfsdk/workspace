@@ -55,6 +55,7 @@ beforeEach(async () => {
     service: scopedService(room, scopeOf),
     scopeOf,
     shares: room,
+    mcp: { packManifests: async () => [{ contract: "wolfsdk.pack.v1", pack_id: "board", name: "Board pack", sources: [], bindings: [] }] },
     authenticate: (request) => {
       const token = tokenOf(request);
       return token === null ? null : (actors.current().actors.get(token) ?? null);
@@ -274,6 +275,13 @@ describe("a guest over the room socket", () => {
 });
 
 describe("a guest over MCP", () => {
+  test("lists the configured pack for a member and omits it for a guest in the same room", async () => {
+    const member = await mcpSession("t-robot", "?room=r1");
+    const guest = await mcpSession("t-gail-bot", "?room=r1");
+    expect((await member("workspace_list", {})).structuredContent.packs).toMatchObject([{ pack: "board" }]);
+    expect((await guest("workspace_list", {})).structuredContent.packs).toEqual([]);
+  });
+
   test("reads and proposes on its document, as the guest and as its agent, and may not commit", async () => {
     for (const token of ["t-gail-bot", "t-lone-bot"]) {
       const tool = await mcpSession(token, "?room=r1");

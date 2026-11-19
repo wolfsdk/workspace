@@ -18,6 +18,7 @@ const ROBOT: RoomActor = { kind: "agent", id: "robot", name: "Robot" };
 const TOKENS = new Map<string, RoomActor>([
   ["t-alice", ALICE],
   ["t-robot", ROBOT],
+  ["t-bob", { kind: "user", id: "bob", name: "Bob" }],
 ]);
 const PAGES = [{ cmd: "display_list", ok: true, ms: 0, page: 1 }];
 const SHARE_URL = "/api/rooms/r1/docs/brief.docx/share";
@@ -59,6 +60,7 @@ beforeEach(async () => {
     dbPath: join(dir, "rooms.sqlite"),
     blobDir: join(dir, "blobs"),
     engine: new MemoryEngine(),
+    authorize: (actor) => actor.id !== "bob",
     seatless: (actor) => actor === SHARE_VIEWER,
   });
   await start();
@@ -81,6 +83,12 @@ async function share(): Promise<Share> {
 }
 
 describe("a member's share link", () => {
+  test("requires admission to the room to read, create or end a share", async () => {
+    const link = await share();
+    for (const method of ["GET", "PUT", "DELETE"]) expect((await as(method, SHARE_URL, "t-bob")).status).toBe(403);
+    expect((await (await as("GET", SHARE_URL)).json()).share.token).toBe(link.token);
+  });
+
   test("is made once, read, and ended", async () => {
     expect(await (await as("GET", SHARE_URL)).json()).toEqual({ share: null });
 
