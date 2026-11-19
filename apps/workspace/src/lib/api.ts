@@ -45,6 +45,44 @@ export type ShareGuest = { id: string; email: string; name: string; added_at: st
 /** The guests of a document and how many it may have. */
 export type ShareGuests = { guests: ShareGuest[]; limit: number };
 
+/** What one cell holds, as live cells read and write it: text, a number, a boolean, or a formula with its leading `=`.
+ * Null is a blank cell. */
+export type CellValue = { string: string } | { number: number } | { boolean: boolean } | { formula: string } | null;
+
+/** One cell of a read: its address, what it holds, and the text the engine calculated for it when there is one.
+ * `editable` false marks a cell the server would not write (an error constant, say). A cell the read leaves out is
+ * blank. */
+export type LiveCell = { a1: string; value: CellValue; display?: string; editable?: boolean };
+
+/** A sheet of the workbook: `id` is its place among the sheets, from 1. */
+export type LiveSheet = { id: number; name: string };
+
+/** Another member and the cell they are on, while their announcement of it lasts. */
+export type LivePeer = { id: string; name: string; sheet: number; a1: string };
+
+/** Why no cell of a workbook may be written live, in the server's words: `LICENSE_LIMIT` (a read-only workspace),
+ * `LIVE_CELLS_UNATTESTED` (bytes the server has not been told are safe to write cell by cell),
+ * `LIVE_CELLS_UNSUPPORTED`. */
+export type LiveRefusal = { code: string; message: string };
+
+/** A window of one sheet at one revision of the head, with the other members on its cells. `editable` false, with
+ * the `refusal` that says why, is a workbook the server reads but does not let anyone write here; it can change from
+ * one read to the next. `merged` lists the merged ranges that reach into the window, as `D1:F1`. */
+export type LiveCells = {
+  revision: number;
+  sheet: number;
+  sheets: LiveSheet[];
+  cells: LiveCell[];
+  peers: LivePeer[];
+  editable: boolean;
+  refusal: LiveRefusal | null;
+  merged?: string[];
+};
+
+/** One cell written over what a read at `revision` found in it (`expected`). A draft reapplied over a newer read also
+ * sends `draftRevision`, the revision of the read it was typed on: the sheets must not have changed since then either. */
+export type LiveCellWrite = { revision: number; draftRevision?: number; sheet: number; a1: string; expected: CellValue; value: CellValue };
+
 /** A refused call: the `error.code` and `error.message` of the body, and the HTTP status. */
 export class ApiError extends Error {
   readonly code: string;
@@ -191,6 +229,37 @@ export class WorkspaceApi {
   /** End the share link of a document: it stops working for everyone who has it. `DELETE .../share`. */
   async unshare(roomId: string, doc: string): Promise<void> {
     await this.#call(`${this.#docPath(roomId, doc)}/share`, { method: "DELETE" });
+  }
+
+  /** A window of one sheet of an XLSX head: `GET /api/rooms/<room>/docs/<doc>/live-cells?sheet=&range=`, for a member.
+   * `sheet` null asks for the first visible sheet; the answer names the sheet it read. Never from the HTTP cache: the
+   * grid reads it again to follow the room. */
+  liveCells(roomId: string, doc: string, sheet: number | null, range: string): Promise<LiveCells> {
+    const query = new URLSearchParams(sheet === null ? { range } : { sheet: String(sheet), range });
+    return this.#json(`${this.#docPath(roomId, doc)}/live-cells?${query}`, { cache: "no-store" });
+  }
+
+  /** Write one cell over what a read found in it. `PUT .../live-cells` answers the revision the write made. A cell or
+   * sheets that moved on since that read throw `CELL_CONFLICT` or `STRUCTURE_CONFLICT` (409); a workbook no one may
+   * write here `LIVE_CELLS_UNATTESTED` (403) or `LICENSE_LIMIT` (402); a cell or entry it cannot take
+   * `CELL_UNSUPPORTED` (422). */
+  async writeLiveCell(roomId: string, doc: string, write: LiveCellWrite): Promise<number> {
+    const body = await this.#json<{ revision: number }>(`${this.#docPath(roomId, doc)}/live-cells`, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(write),
+    });
+    return body.revision;
+  }
+
+  /** Say which cell the caller is on, for the others' reads until it expires. `POST .../live-cells` answers 204; the
+   * server knows who is asking. */
+  async announceLiveCell(roomId: string, doc: string, at: { sheet: number; a1: string }): Promise<void> {
+    await this.#call(`${this.#docPath(roomId, doc)}/live-cells`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(at),
+    });
   }
 
   /** What a share link shows. `GET /api/share/<token>` needs no credential; an unknown or ended link throws

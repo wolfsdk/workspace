@@ -2,18 +2,22 @@
 // Center stage: one `<wolf-review>` for the life of the page. In head mode it edits the head of the active
 // document and sends the local edits as a commit or a proposal; in review mode it shows an open proposal over the
 // head it was made against, change by change, and its decision goes back to the room. Agent activity of the
-// document lands on the element's presence bar as it happens. A shared link (`shareMode`) has no element and no
-// engine: its stage paints the server's display-list snapshot instead, see `snapshot-stage.tsx`.
+// document lands on the element's presence bar as it happens. A user who is a member may open an XLSX head as live
+// cells instead: the element goes, and the server reads and writes the cells, see `live-cells.tsx`. A shared link
+// (`shareMode`) has no element and no engine: its stage paints the server's display-list snapshot instead, see
+// `snapshot-stage.tsx`.
 import type { RoomActivityEvent, WolfReviewElement, WolfReviewSubmitDetail } from "@wolfsdk/review";
 import type { EngineSource } from "@wolfsdk/review";
 import type { RoomActor, RoomProposal, RoomServerEvent } from "@wolfsdk/protocol/workspace";
-import { useEffect, useRef, useState } from "preact/hooks";
+import { useEffect, useMemo, useRef, useState } from "preact/hooks";
 import { ApiError, type WorkspaceApi } from "../lib/api.ts";
+import { LiveCellsModel } from "../lib/live-cells.ts";
 import { type Page, type RoomClient, RoomRequestError } from "../lib/room-client.ts";
 import { type ActivityItem, type DocumentSummary, presenceFor, proposalSize } from "../lib/room-state.ts";
 import { batchFromSession, isActivityFor, isOwnCommit, isOwnNewProposal, outcomeOf, reviewInputOf } from "../lib/review.ts";
 import { isReviewable, shortSha, type Theme } from "../lib/session.ts";
-import { ActorBadge, downloadBytes, EmptyState, FormatPill, Icon, type Toast } from "./common.tsx";
+import { ActorBadge, downloadBytes, EmptyState, FormatPill, Icon, plural, type Toast } from "./common.tsx";
+import { LiveCellsStage } from "./live-cells.tsx";
 import { SharedSnapshotStage } from "./snapshot-stage.tsx";
 
 export type StageProps = {
@@ -46,16 +50,70 @@ export type StageProps = {
 
 type Opened = { doc: string; revision: number; sha256: string; mode: "head" | "review" | "pdf" };
 
-const plural = (n: number, one: string, many: string): string => `${n} ${n === 1 ? one : many}`;
-
 export function Stage(props: StageProps) {
   if (props.shareMode) {
     return <SharedSnapshotStage api={props.api} roomId={props.roomId} doc={props.doc} snapshotPages={props.snapshotPages} activity={props.activity} />;
   }
-  return <EditorStage {...props} />;
+  return <MemberStage {...props} />;
 }
 
-function EditorStage(props: StageProps) {
+/** The stage of a member or a guest: the document in `<wolf-review>`, or, for a user who is a member, an XLSX head as
+ * live cells. Live cells keep their drafts while a proposal of the same document is under review, and the page counts
+ * them with the element's local changes before anything drops them. */
+function MemberStage(props: StageProps) {
+  const { api, roomId, actor, doc, proposal } = props;
+  const latest = useRef(props);
+  latest.current = props;
+  const key = roomId !== null && doc !== null && doc.format === "xlsx" ? `${roomId}\n${doc.name}` : null;
+  /** The document open as live cells, by `key`. */
+  const [live, setLive] = useState<string | null>(null);
+  const liveKey = live !== null && live === key ? live : null;
+  const model = useMemo(() => (liveKey === null ? null : new LiveCellsModel(api, roomId!, doc!.name, actor)), [liveKey, api]);
+  const dirty = useRef({ editor: 0, drafts: 0 });
+  const report = (): void => latest.current.onDirty(dirty.current.editor + dirty.current.drafts);
+
+  useEffect(() => {
+    if (live !== null && live !== key) setLive(null);
+  }, [key]);
+
+  useEffect(() => {
+    const count = (drafts: number): void => {
+      dirty.current.drafts = drafts;
+      report();
+    };
+    if (model === null) return count(0);
+    count(Object.keys(model.state.drafts).length);
+    return model.subscribe((state) => {
+      const drafts = Object.keys(state.drafts).length;
+      if (drafts !== dirty.current.drafts) count(drafts);
+    });
+  }, [model]);
+
+  const openLive = (): void => {
+    if (key === null || doc === null) return;
+    const local = dirty.current.editor;
+    if (local > 0 && !confirm(`Discard ${plural(local, "local change", "local changes")} to ${doc.name} and open its live cells?`)) return;
+    dirty.current.editor = 0;
+    report();
+    props.onSelection(null);
+    setLive(key);
+  };
+
+  if (model !== null && doc !== null && proposal === null) return <LiveCellsStage model={model} doc={doc} onClose={() => setLive(null)} />;
+  const member = props.guest !== true && actor.kind === "user";
+  return (
+    <EditorStage
+      {...props}
+      onDirty={(n) => {
+        dirty.current.editor = n;
+        report();
+      }}
+      onLiveCells={member && key !== null && proposal === null ? openLive : undefined}
+    />
+  );
+}
+
+function EditorStage(props: StageProps & { onLiveCells?: () => void }) {
   const { api, client, roomId, actor, doc, proposal } = props;
   const host = useRef<HTMLDivElement>(null);
   const latest = useRef(props);
@@ -366,36 +424,49 @@ function EditorStage(props: StageProps) {
               {local > 0 ? <span class="dirty">{plural(local, "local change", "local changes")}</span> : <span>No local changes</span>}
             </span>
           </div>
-          {opened?.mode === "head" ? (
-            <form
-              class="banner-actions"
-              onSubmit={(e) => {
-                e.preventDefault();
-                void send("propose");
-              }}
-            >
-              <input
-                class="input input--compact"
-                placeholder="Summary of your change"
-                aria-label="Summary of your change"
-                value={label}
-                onInput={(e) => setLabel(e.currentTarget.value)}
-              />
-              <button type="submit" class={`button button--small${guest ? " button--primary" : ""}`} disabled={local === 0 || busy !== null || conflict !== null}>
-                {busy === "propose" ? "Proposing" : "Propose Edit"}
+          <div class="banner-actions">
+            {props.onLiveCells ? (
+              <button
+                type="button"
+                class="button button--small button--quiet"
+                data-testid="live-cells-open"
+                title="Read and write the cells of this head one by one, with the other members, without the engine in this page"
+                onClick={props.onLiveCells}
+              >
+                Live cells
               </button>
-              {guest ? null : (
-                <button
-                  type="button"
-                  class="button button--small button--primary"
-                  disabled={local === 0 || busy !== null || conflict !== null}
-                  onClick={() => void send("commit")}
-                >
-                  {busy === "commit" ? "Committing" : "Commit Edit"}
+            ) : null}
+            {opened?.mode === "head" ? (
+              <form
+                class="banner-actions"
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  void send("propose");
+                }}
+              >
+                <input
+                  class="input input--compact"
+                  placeholder="Summary of your change"
+                  aria-label="Summary of your change"
+                  value={label}
+                  onInput={(e) => setLabel(e.currentTarget.value)}
+                />
+                <button type="submit" class={`button button--small${guest ? " button--primary" : ""}`} disabled={local === 0 || busy !== null || conflict !== null}>
+                  {busy === "propose" ? "Proposing" : "Propose Edit"}
                 </button>
-              )}
-            </form>
-          ) : null}
+                {guest ? null : (
+                  <button
+                    type="button"
+                    class="button button--small button--primary"
+                    disabled={local === 0 || busy !== null || conflict !== null}
+                    onClick={() => void send("commit")}
+                  >
+                    {busy === "commit" ? "Committing" : "Commit Edit"}
+                  </button>
+                )}
+              </form>
+            ) : null}
+          </div>
         </div>
       )}
       {conflict !== null && opened !== null ? (

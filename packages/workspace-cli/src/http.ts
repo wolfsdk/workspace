@@ -58,6 +58,7 @@ import workspacePackage from "../package.json" with { type: "json" };
 import { type PlanReadOnly, planReadOnlyMode } from "./errors.ts";
 import { type ExportRefusal, exportResponse, planExport } from "./export.ts";
 import { directoryPackManifests, directoryPackRefresher } from "./pack-refresher.ts";
+import { LiveCells, type LiveCellsOptions, type LiveReply } from "./live-cells.ts";
 
 export type Authenticate = (request: Request) => RoomActor | null | Promise<RoomActor | null>;
 
@@ -91,6 +92,9 @@ export type WorkspaceServerOptions = {
   /** The `display_list` response of each page of a document, in page order: what `GET /api/rooms/<room>/docs/<doc>/snapshot`
    * serves a shared link, which paints the pages without loading an engine. Without it that route answers 501. */
   snapshot?: (input: SnapshotInput) => Promise<unknown[]>;
+  /** The engine and the attested workbooks of live cells: `GET`, `PUT` and `POST /api/rooms/<room>/docs/<doc>/live-cells`, the
+   * cell-by-cell collaboration on the head of an XLSX document (see `live-cells.ts`). Without it those routes answer 501. */
+  liveCells?: LiveCellsOptions | null;
   /** The engine hooks of the MCP tools (`inspector`, `renderer`, `packs`). The MCP endpoint is always on. */
   mcp?: Omit<WorkspaceToolsOptions, "service" | "roomId" | "readOnly">;
   /** The pack `GET /api/pack` checks against the heads of a room (`?room=`, else `defaultRoom`, else the only room;
@@ -302,6 +306,7 @@ const MCP_PLACEHOLDER: RoomActor = { kind: "agent", id: "wolf-workspace-mcp", na
 
 export function startWorkspaceServer(options: WorkspaceServerOptions): WorkspaceServer {
   const { service, authenticate } = options;
+  const liveCells = options.liveCells ? new LiveCells(service, options.liveCells) : null;
   const scopeOf: ScopeOf = options.scopeOf ?? (() => null);
   const staticDir = options.staticDir ? resolve(options.staticDir) : null;
   const wasmDir = options.wasmDir ? resolve(options.wasmDir) : null;
@@ -601,6 +606,35 @@ export function startWorkspaceServer(options: WorkspaceServerOptions): Workspace
     }
   }
 
+  /** `GET`, `PUT` and `POST .../docs/<doc>/live-cells`. They are for members: a guest or an agent is refused, since the
+   * cell edits and the selections are what people do together. A write is refused as every write is while the workspace is
+   * read-only, before its body is read. */
+  async function liveCellsRoute(request: Request, roomId: string, docName: string, actor: RoomActor, scope: AccessScope | null): Promise<Response> {
+    const method = request.method;
+    if (method !== "GET" && method !== "PUT" && method !== "POST") {
+      return problem(405, "BAD_REQUEST", "read cells with GET, write one with PUT, announce a selection with POST", {}, { allow: "GET, PUT, POST" });
+    }
+    if (scope !== null || actor.kind !== "user") return problem(403, "FORBIDDEN", "live cells are for the members of the workspace, not for guests or agents");
+    if (liveCells === null) return problem(501, "NO_LIVE_CELLS", "this server has no engine for live cells: start it with an engine");
+    const refused = refusal();
+    if (refused !== null && method !== "GET") return failed(refused);
+    const caller = { roomId, doc: docName, actor, refusal: refused };
+    let reply: LiveReply;
+    if (method === "GET") {
+      reply = await liveCells.get(caller, new URL(request.url).searchParams);
+    } else {
+      const body = await readJson(request);
+      if (body instanceof Response) return body;
+      reply = await (method === "PUT" ? liveCells.put(caller, body) : liveCells.post(caller, body));
+    }
+    if ("failure" in reply) return failed(reply.failure);
+    if ("error" in reply) {
+      const { code, message, ...extra } = reply.error;
+      return problem(reply.status, code, message, extra);
+    }
+    return reply.status === 204 ? new Response(null, { status: 204, headers: { "cache-control": "no-store" } }) : json(200, reply.body);
+  }
+
   async function readPreview(roomId: string, actor: RoomActor, proposalId: string): Promise<Response> {
     const read = await service.readPreview(roomId, actor, proposalId);
     if (!read.ok) return failed(read.error);
@@ -817,6 +851,7 @@ export function startWorkspaceServer(options: WorkspaceServerOptions): Workspace
       if (kind === "docs" && parts.length === 5 && leaf === "share" && item) return memberShare(request, roomId, item, actor, scope);
       if (kind === "docs" && parts.length === 5 && leaf === "head" && item && (method === "GET" || method === "HEAD")) return readHead(request, roomId, actor, item);
       if (kind === "docs" && parts.length === 5 && leaf === "snapshot" && item && method === "GET") return readSnapshot(request, roomId, actor, item);
+      if (kind === "docs" && parts.length === 5 && leaf === "live-cells" && item) return liveCellsRoute(request, roomId, item, actor, scope);
       if (kind === "proposals" && parts.length === 5 && leaf === "preview" && item && method === "GET") return readPreview(roomId, actor, item);
     }
     return problem(404, "NOT_FOUND", `no route ${method} ${path}`);

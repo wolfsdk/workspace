@@ -49,6 +49,17 @@ WOLF_ENGINE="$WOLF" bun scripts/smoke-docx.ts
 Run it from the repository root. It prints `DOCX uploaded, rendered and downloaded byte-identically`
 on success.
 
+### Two-browser Excel check
+
+From the repository root after building the UI:
+
+```sh
+bunx playwright-core install chromium firefox
+WOLF_ENGINE="$WOLF" bun scripts/smoke-live-cells.ts
+```
+
+The check opens a real workbook as two users, saves edits to different cells, then tries competing formulas in the same cell. It downloads the workbook and reads the winning formula and the other user's value through the released engine. Set `LIVE_PROOF_DIR` to an empty directory to retain the workbook, screenshots, and receipt. To select installed browser executables, set `CHROMIUM_PATH` or `FIREFOX_PATH`.
+
 ## A local room server
 
 Keep the server's state outside the checkout. From the repository root:

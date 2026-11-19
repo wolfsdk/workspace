@@ -18,11 +18,9 @@ import {
   type PackReport,
   type RefreshReport,
 } from "@wolfsdk/packs";
-import type { ReactorPipeCommand, ReactorPipeRequest, ReactorPipeResponse } from "@wolfsdk/protocol/workspace";
 import {
   EngineFault,
   EngineRefusal,
-  type EngineWorker,
   isRoomDatabase,
   type PlanCap,
   PoolEngine,
@@ -34,6 +32,7 @@ import {
 } from "@wolfsdk/server";
 import { addActor, watchActorDirectory } from "./actors.ts";
 import { type BackupEnv, runBackup, runRestore } from "./backup.ts";
+import { ask } from "./engine.ts";
 import { type PlanReadOnly, planReadOnlyMode, UsageError } from "./errors.ts";
 import { type SnapshotInput, SHARE_VIEWER, startWorkspaceServer, tokenOf, type WorkspaceAssistantOptions, type WorkspaceServer } from "./http.ts";
 
@@ -52,6 +51,7 @@ const USAGE = `wolfsdk-workspace: check and refresh packs, serve the workspace, 
   wolfsdk-workspace serve   --db <file> --blobs <dir> --engine <wolf> --actors <file>
                             [--port <n>] [--host <name>] [--pool <n>] [--static-dir <dir>]
                             [--wasm-dir <dir>] [--pack <dir>] [--default-room <id>] [--workspace-id <id>] [--share-connect <path>]
+                            [--live-cells-attest <sha256>]...
                             [--plan-seats <n|unlimited> --plan-workspaces <n|unlimited> --plan-upgrade <text> [--plan-name <name>]]
                             [--read-only-reason <text> --read-only-upgrade <text>]
                             [--plan-record <file>]
@@ -109,6 +109,14 @@ restore   rebuild a workspace from a backup into an empty place: the newest snap
                       Sharing itself needs no flag: GET /api/share/<token> and GET /api/share/<token>/snapshot answer
                       anyone who holds a live link, with no token, and an actors-file entry with a "guest" field limits
                       that user or agent to the listed documents.
+--live-cells-attest <sha256>
+                      repeatable. The sha256 of an XLSX file that you reviewed as unprotected and made of standalone
+                      scalar values and formulas only (no shared, array or spill formulas, no special ranges): the
+                      exact bytes that live cells may write cell by cell. The engine does not report sheet protection or
+                      the kind of a formula, so no uploaded workbook is writable there by default; the others stay
+                      readable. A write of live cells (a typed value, or a formula of numbers, same-sheet A1 references,
+                      + - * / ^ and parentheses) leaves the workbook writable until something else edits it; a restart
+                      forgets that, so attest the head again.
 --plan-seats <n|unlimited>, --plan-workspaces <n|unlimited>
                       a cap of a plan under the limits of the engine licence: the server admits the smaller of
                       the two. A refusal that the plan caused says which limit, what would be one more, and
@@ -171,6 +179,7 @@ const SERVE_OPTIONS = {
   "default-room": { type: "string" },
   "workspace-id": { type: "string" },
   "share-connect": { type: "string" },
+  "live-cells-attest": { type: "string", multiple: true },
   "plan-seats": { type: "string" },
   "plan-workspaces": { type: "string" },
   "plan-name": { type: "string" },
@@ -434,17 +443,6 @@ async function runPack(command: "check" | "refresh", args: string[], io: CliIo):
   }
 }
 
-type Answer<C extends ReactorPipeCommand> = Extract<ReactorPipeResponse, { cmd: C }>;
-
-/** The answer to `request`, narrowed to its command. `EngineRefusal` when the worker said no, `EngineFault` when it
- * answered another command. */
-async function ask<C extends ReactorPipeCommand>(worker: EngineWorker, request: ReactorPipeRequest & { cmd: C }, segments: readonly Uint8Array[] = []): Promise<Answer<C>> {
-  const { body } = await worker.call(request, segments);
-  if ("error" in body && body.error !== undefined) throw new EngineRefusal(body.error.code, body.error.message, body.cmd ?? request.cmd, body.error.argument);
-  if (body.cmd !== request.cmd) throw new EngineFault(`worker answered ${String(body.cmd)} to ${request.cmd}`);
-  return body as Answer<C>;
-}
-
 /** The snapshot a shared link paints: the `display_list` answer of every page of a document, in page order. One
  * worker opens the head bytes, lays them out, asks each page and closes the document; a worker that cannot say it
  * closed the document is not reused. */
@@ -513,6 +511,10 @@ async function runServe(args: string[], io: CliIo, env: BackupEnv = process.env)
   if (shareConnect !== null && !(shareConnect.startsWith("/") && !shareConnect.startsWith("//") && !/[\s?#]/.test(shareConnect))) {
     throw new UsageError("--share-connect must be a path on this host that starts with / (such as /-/connect/instructions), with no query");
   }
+  const attested = (values["live-cells-attest"] ?? []).map((digest) => {
+    if (!/^[0-9a-fA-F]{64}$/.test(digest)) throw new UsageError(`--live-cells-attest takes the sha256 of a workbook: 64 hexadecimal digits, not ${JSON.stringify(digest)}`);
+    return digest.toLowerCase();
+  });
   const planCap = planCapOf(values);
   const readOnly = readOnlyOf(values);
   const assistant = assistantOf(values, db, env);
@@ -565,6 +567,7 @@ async function runServe(args: string[], io: CliIo, env: BackupEnv = process.env)
     staticDir,
     wasmDir,
     snapshot: engineSnapshot(pool),
+    liveCells: { pool, attested },
     mcp: { inspector: engineInspector(pool), renderer: engineRenderer(pool) },
     pack: packDir === null ? null : { dir: packDir, evaluator: new PoolXlsxEvaluator(pool), engine: documents },
     defaultRoom,
