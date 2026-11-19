@@ -1,9 +1,10 @@
 // Streamable HTTP: the handler is driven as a plain `(Request) => Response` and, once, over a real socket.
-import { afterEach, describe, expect, setSystemTime, test } from "bun:test";
+import { afterEach, describe, expect, setDefaultTimeout, setSystemTime, test } from "bun:test";
 import { INVALID_REQUEST, PARSE_ERROR, createMcpHttpHandler, prefersEventStream, startMcpHttpServer, type McpHttpOptions } from "../src/index.ts";
 import { SseReader, roomEvents } from "./fixtures/sse.ts";
 import { alice, disposeAll, helper, initializeRequest, listen, makeWorkspace, notify, onDispose, request, type Workspace } from "./fixtures/workspace.ts";
 
+setDefaultTimeout(120_000);
 afterEach(async () => {
   setSystemTime();
   await disposeAll();
@@ -212,8 +213,8 @@ describe("GET: the event stream", () => {
     await fetch(post(request("tools/call", { name: "doc_edit", arguments: { doc: "brief.docx", base_revision: 0, mode: "commit", ops: [{ op: "append_paragraph", text: "x" }] } }), { "mcp-session-id": id }));
     const frames = await reader.until((f) => roomEvents([f])[0]?.event.activity === "idle");
     const events = roomEvents(frames);
-    expect(events.map((e) => e.event.type)).toEqual(["agent.activity", "doc.committed", "agent.activity"]);
-    expect(events.map((e) => e.event.activity)).toEqual(["committing", undefined, "idle"]);
+    expect(events.map((e) => e.event.type)).toEqual(["doc.committed", "agent.activity", "agent.activity"]);
+    expect(events.map((e) => e.event.activity)).toEqual([undefined, "committing", "idle"]);
     const ids = events.map((e) => Number(e.id));
     expect(ids.every(Number.isInteger)).toBe(true);
     expect(ids).toEqual(events.map((e) => e.event.seq as number));

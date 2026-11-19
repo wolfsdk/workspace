@@ -5,6 +5,10 @@
 import {
   type McpWorkspaceCall,
   type McpWorkspaceToolName,
+  type PackBinding,
+  type PackManifest,
+  type PackSelector,
+  type PackTargetKind,
   type RoomActor,
   type RoomAgentActivity,
   type RoomHead,
@@ -12,7 +16,7 @@ import {
   type RoomState,
   type RoomThread,
 } from "@wolfsdk/protocol/workspace";
-import { EngineFault, EngineRefusal, type Result, type RoomFailure, type RoomService } from "@wolfsdk/server";
+import { EngineFault, EngineRefusal, readOnlyFailure, type ReadOnlyMode, type Result, type RoomFailure, type RoomService } from "@wolfsdk/server";
 import {
   type CellView,
   type DocContent,
@@ -24,7 +28,7 @@ import {
   type VisualRenderer,
   type WorkspaceDocInspector,
 } from "./hooks.ts";
-import { blankDocument, type Block, type ReadableDocument, ReadError, readDocument } from "./read/index.ts";
+import { blankDocument, type Block, type CellEntry, type CellValue, type ReadableDocument, ReadError, readDocument } from "./read/index.ts";
 import { errorResult, type ImageBlock, imageBlock, okResult, type ToolResult } from "./results.ts";
 
 export type WorkspaceToolsOptions = {
@@ -37,9 +41,23 @@ export type WorkspaceToolsOptions = {
   renderer?: VisualRenderer;
   /** Lists and refreshes packs. Without it `pack_link_refresh` answers `BAD_REQUEST`. */
   packs?: PackRefresher;
+  /** The manifests (`pack.wolf.json`) of the workspace's packs. With it `workspace_list` lists the packs of these
+   * manifests and describes each binding: its target kind, the cells it reads (a defined name or table resolved to
+   * its sheet cell or range), the value the room's head of the source workbook holds there, and the target it
+   * writes. Without it the packs come from `packs.listPacks`, by binding id only. The manifests are asked for on
+   * every `workspace_list`. */
+  packManifests?: () => Promise<PackManifest[]>;
+  /** The workspace refuses every write. The four write tools (`doc_create`, `doc_edit`, `comment_reply`,
+   * `pack_link_refresh`) answer with that refusal before they read or validate anything else. The room service
+   * refuses the same writes itself: this makes the answer come first, and covers a refresher that would report the
+   * refusal as a failed binding. Pass the value the room service was given. */
+  readOnly?: ReadOnlyMode;
 };
 
 type Args<N extends McpWorkspaceToolName> = Extract<McpWorkspaceCall, { name: N }>["arguments"];
+
+/** The tools that write to the room: what a read-only workspace refuses. */
+const WRITE_TOOLS: Readonly<Record<string, true>> = { doc_create: true, doc_edit: true, comment_reply: true, pack_link_refresh: true };
 
 const DEFAULT_LIST_LIMIT = 100;
 const DEFAULT_SEARCH_LIMIT = 20;
@@ -68,6 +86,12 @@ function node(block: Block): StructureNode {
   if (block.aliases && block.aliases.length > 0) out.aliases = [...block.aliases];
   if (block.meta && Object.keys(block.meta).length > 0) out.meta = block.meta;
   return out;
+}
+
+/** `node` with its text cut to a preview. An inspector lists a unit with its whole text. */
+function previewed(node: StructureNode): StructureNode {
+  if (node.text === undefined || node.text.length <= PREVIEW_CHARS) return node;
+  return { ...node, text: preview(node.text) };
 }
 
 /** What the built-in reader makes of `view`. */
@@ -228,12 +252,295 @@ function mentionsOf(body: string, known: ReadonlyMap<string, RoomActor["kind"]>)
   return { mentions, unresolved };
 }
 
+// Pack bindings -------------------------------------------------------------------------------------------------
+
+/** Cells of a range source value `workspace_list` shows; `doc_read` of `source_address` reads all of them. */
+const MAX_BINDING_VALUE_CELLS = 50;
+
+/** One binding of a pack as `workspace_list` describes it (`$defs.pack_binding_definition` of the schema). */
+type BindingDefinition = {
+  id: string;
+  kind: PackTargetKind;
+  selector: PackSelector;
+  source_doc: string | null;
+  source_address: string | null;
+  source_revision?: number;
+  value?: CellValue | CellValue[][];
+  value_truncated?: true;
+  target_doc: string;
+  target_address: string;
+  problem?: string;
+};
+
+/** A source workbook as the room holds it, with its defined names once asked for, or why it can not be read. */
+type SourceBook = { doc: ReadableDocument; revision: number; names?: Block[] } | { problem: string };
+
+/** What a binding reads: an area of one sheet, a constant (a defined name such as `0.2`), or why neither. */
+type SourceArea = { sheet: string; ref: string };
+type Resolution = { area: SourceArea } | { constant: CellValue } | { problem: string };
+
+/** What `workspace_list` makes of a binding's source. */
+type SourceRead = { address: string | null; revision?: number; value?: CellValue | CellValue[][]; truncated?: boolean; problem?: string };
+
+/** `name` as an Agent API address key, written the way the built-in readers write one: `%`, `/` and control
+ * characters percent-encoded, and a leading `#`, `@` or `~` too. */
+function addressKey(name: string): string {
+  let out = "";
+  for (const ch of name) {
+    const code = ch.codePointAt(0) ?? 0;
+    out += ch === "%" || ch === "/" || code < 0x20 ? `%${code.toString(16).toUpperCase().padStart(2, "0")}` : ch;
+  }
+  const first = out.charAt(0);
+  if (first === "#" || first === "@" || first === "~") out = `%${(first.codePointAt(0) ?? 0).toString(16).toUpperCase()}${out.slice(1)}`;
+  return out;
+}
+
+/** An A1 reference or range with its `$` anchors dropped. */
+const bareRef = (ref: string): string => ref.replace(/\$/g, "").toUpperCase();
+
+function cellOf(ref: string): { col: number; row: number } | undefined {
+  const m = /^([A-Z]{1,3})(\d{1,7})$/.exec(ref);
+  if (!m) return undefined;
+  let col = 0;
+  for (const ch of m[1] as string) col = col * 26 + (ch.charCodeAt(0) - 64);
+  return { col, row: Number(m[2]) };
+}
+
+function colName(col: number): string {
+  let out = "";
+  for (let n = col; n > 0; n = Math.floor((n - 1) / 26)) out = String.fromCharCode(65 + ((n - 1) % 26)) + out;
+  return out;
+}
+
+/** The Agent API address of `area`: `sheet:<name>/cell:B2` or `sheet:<name>/range:A1:C4`, which `doc_read` takes. */
+function areaAddress(area: SourceArea): string {
+  return `sheet:${addressKey(area.sheet)}/${area.ref.includes(":") ? "range" : "cell"}:${area.ref}`;
+}
+
+/** The Agent API address of a binding's target: a `docx_bookmark` names its bookmark, every other kind is already
+ * an address. */
+function targetAddress(binding: PackBinding): string {
+  return binding.target_kind === "docx_bookmark" ? `bookmark:${addressKey(binding.target_address)}` : binding.target_address;
+}
+
+const DEFINED_AREA = /^(?:'((?:[^']|'')+)'|([^'!]+))!(\$?[A-Za-z]{1,3}\$?\d+(?::\$?[A-Za-z]{1,3}\$?\d+)?)$/;
+
+/** What the defined name `wanted` stands for, chosen as a pack refresh chooses it: the exact name before a
+ * case-insensitive match, a workbook-scoped name before a sheet-scoped one. */
+function definedName(names: readonly Block[], wanted: string): Resolution {
+  const matches = names.filter((name) => name.label === wanted || name.label?.toLowerCase() === wanted.toLowerCase());
+  const exact = matches.filter((name) => name.label === wanted);
+  const pool = exact.length > 0 ? exact : matches;
+  const workbook = pool.filter((name) => name.meta?.sheet === null);
+  const chosen = workbook.length > 0 ? workbook : pool;
+  const [name] = chosen;
+  if (name === undefined) return { problem: `the workbook has no defined name ${JSON.stringify(wanted)}` };
+  if (chosen.length > 1) return { problem: `the defined name ${JSON.stringify(wanted)} is scoped to several sheets` };
+  const formula = name.text.trim();
+  const area = DEFINED_AREA.exec(formula);
+  if (area) return { area: { sheet: area[1] !== undefined ? area[1].replace(/''/g, "'") : (area[2] as string), ref: bareRef(area[3] as string) } };
+  if (/^-?\d+(\.\d+)?([eE][+-]?\d+)?$/.test(formula)) return { constant: Number(formula) };
+  const text = /^"((?:[^"]|"")*)"$/.exec(formula);
+  if (text) return { constant: (text[1] as string).replace(/""/g, '"') };
+  return { problem: `the defined name ${JSON.stringify(wanted)} is ${JSON.stringify(formula)}: not a cell, a range or a constant` };
+}
+
+/** The sheet area of the table `name`, header row included, as a pack refresh reads it. */
+function tableArea(doc: ReadableDocument, name: string): Resolution {
+  let blocks: Block[];
+  try {
+    blocks = doc.blocks(`table:${addressKey(name)}`);
+  } catch (error) {
+    if (error instanceof ReadError) return { problem: `the workbook has no table ${JSON.stringify(name)}` };
+    throw error;
+  }
+  const sheet = blocks[0]?.meta?.sheet;
+  const ref = blocks[0]?.meta?.ref;
+  if (typeof sheet !== "string" || typeof ref !== "string") return { problem: `the table ${JSON.stringify(name)} has no sheet range` };
+  return { area: { sheet, ref: bareRef(ref) } };
+}
+
+/** The defined names of `book`, read once. */
+function namesOf(book: { doc: ReadableDocument; names?: Block[] }): Block[] {
+  book.names ??= book.doc.blocks().filter((block) => block.kind === "name");
+  return book.names;
+}
+
+function resolveSelector(selector: PackSelector, book: { doc: ReadableDocument; names?: Block[] }): Resolution {
+  switch (selector.type) {
+    case "cell":
+    case "range":
+      return { area: { sheet: selector.sheet, ref: bareRef(selector.ref) } };
+    case "table":
+      return tableArea(book.doc, selector.name);
+    case "defined_name":
+      return definedName(namesOf(book), selector.name);
+  }
+}
+
+/** The stored values of `area`: one value for a cell, rows of values for a range (cut to
+ * `MAX_BINDING_VALUE_CELLS`). A formula cell holds its cached value. */
+function areaValue(doc: ReadableDocument, area: SourceArea): { value: CellValue | CellValue[][]; truncated: boolean } | { problem: string } {
+  let cells: CellEntry[];
+  try {
+    cells = doc.cells(areaAddress(area));
+  } catch (error) {
+    if (error instanceof ReadError) return { problem: error.message };
+    throw error;
+  }
+  const values = new Map(cells.map((cell) => [cell.ref, cell.value]));
+  const [first, last = first] = area.ref.split(":");
+  const from = cellOf(first as string);
+  const to = cellOf(last as string);
+  if (!from || !to) return { problem: `${area.ref} is not a cell or range of the sheet grid` };
+  if (!area.ref.includes(":")) return { value: values.get(area.ref) ?? null, truncated: false };
+  const width = to.col - from.col + 1;
+  const height = to.row - from.row + 1;
+  const cols = Math.min(width, MAX_BINDING_VALUE_CELLS);
+  const rows = Math.min(height, Math.max(1, Math.floor(MAX_BINDING_VALUE_CELLS / cols)));
+  const grid: CellValue[][] = [];
+  for (let r = from.row; r < from.row + rows; r++) {
+    const row: CellValue[] = [];
+    for (let c = from.col; c < from.col + cols; c++) row.push(values.get(`${colName(c)}${r}`) ?? null);
+    grid.push(row);
+  }
+  return { value: grid, truncated: cols < width || rows < height };
+}
+
+/** What `binding` reads from `book` (its source workbook as the room holds it). */
+function readSource(binding: PackBinding, book: SourceBook): SourceRead {
+  const direct = binding.selector.type === "cell" || binding.selector.type === "range" ? areaAddress({ sheet: binding.selector.sheet, ref: bareRef(binding.selector.ref) }) : null;
+  if ("problem" in book) return { address: direct, problem: book.problem };
+  const resolved = resolveSelector(binding.selector, book);
+  if ("problem" in resolved) return { address: null, revision: book.revision, problem: resolved.problem };
+  if ("constant" in resolved) return { address: null, revision: book.revision, value: resolved.constant };
+  const address = areaAddress(resolved.area);
+  const read = areaValue(book.doc, resolved.area);
+  if ("problem" in read) return { address, revision: book.revision, problem: read.problem };
+  return { address, revision: book.revision, value: read.value, truncated: read.truncated };
+}
+
+/** `binding` as `workspace_list` lists it, its members in the order an agent reads them: what it reads, the value
+ * there, then where it writes. */
+function bindingDefinition(binding: PackBinding, sourceDoc: string | null, read: SourceRead): BindingDefinition {
+  return {
+    id: binding.id,
+    kind: binding.target_kind,
+    selector: binding.selector,
+    source_doc: sourceDoc,
+    source_address: read.address,
+    ...(read.revision === undefined ? {} : { source_revision: read.revision }),
+    ...("value" in read ? { value: read.value } : {}),
+    ...(read.truncated === true ? { value_truncated: true as const } : {}),
+    target_doc: binding.target_doc,
+    target_address: targetAddress(binding),
+    ...(read.problem === undefined ? {} : { problem: read.problem }),
+  };
+}
+
+// doc_edit ops ------------------------------------------------------------------------------------------------
+
+type EditFormat = "docx" | "xlsx" | "pptx";
+
+/** The Agent API operations a `doc_edit` batch may hold for each format, with the members each takes, as the engine
+ * names them (`docs/agent-api.md` section 5.1; the operation guide of `@wolfsdk/assistant` names the same). The first
+ * op of each format is the one for a text change. A refusal for an op name the engine does not know answers with
+ * this list, so an agent that guessed a name is told the ones that exist instead of guessing again. */
+const EDIT_OPS: Readonly<Record<EditFormat, Readonly<Record<string, string>>>> = {
+  docx: {
+    "replace-text": '{target, find, replace}: literal replacement inside a paragraph, run or span, for changing a few words',
+    set: '{target, value: {"text": "..."}}: replace the whole text of a paragraph, run, span, table cell or field',
+    "splice-text": "{target, start, end, text}: replace characters start to end of a paragraph",
+    insert: '{anchor, position, node: {"kind": "paragraph", "text": "..."}}: add a paragraph, comment, reply or hyperlink',
+    delete: "{target}: remove a paragraph, run, span, table or table row",
+    move: "{target, anchor, position}: move a paragraph before or after another",
+    format: '{target, format}: {"font": {...}} on a paragraph, run or span, {"paragraph": {...}} on a paragraph',
+    "split-paragraph": "{target, offset}",
+    "join-paragraph": "{target}: join a paragraph to the one before it",
+    "insert-hyperlink": "{anchor, position, text, url}",
+    "retarget-hyperlink": "{target, url}",
+    "insert-row": '{anchor, position, cells: ["..."]}',
+    "insert-column": "{target, index}",
+    "delete-column": "{target, index}",
+    "edit-cell": "{target, shading, align, vertical_align}",
+    "insert-list-item": "{anchor, position, text, level}",
+    "set-list-level": "{target, level}",
+    "set-list": "{target, list, level}",
+    review: '{target, action: "accept" or "reject"}',
+  },
+  xlsx: {
+    set: '{target, value: {"string": "..."} or {"number": 1} or {"formula": "=..."}}, or {target, values}: write cells',
+    "replace-text": "{target, find, replace}: literal replacement in the cell text of a range, sheet or the workbook",
+    insert: "{anchor, position, node}: add a row, column, sheet, table, chart, comment or defined name",
+    delete: "{target}: remove a row, column, sheet or table; a cell or range is cleared",
+    format: "{target, format}",
+    copy: "{source, target}",
+    sort: "{target, keys, header}",
+    autofilter: "{target, action, criteria}",
+    resize: "{target, range}",
+    rename: "{target, name}",
+    move: "{target, anchor, position}",
+    merge: "{target}",
+    unmerge: "{target}",
+    freeze: "{target, cell}",
+    visibility: "{target, state}",
+    hyperlink: "{target, action, url}",
+    recalculate: '{target: "workbook"}',
+  },
+  pptx: {
+    "replace-text": "{target, find, replace}: literal replacement inside a shape, paragraph, run, table cell or notes",
+    set: '{target, value: {"text": "..."}}: replace the whole text of a shape, paragraph, run, table cell or notes, or a chart point',
+    insert: '{anchor, position, node}: add a slide, shape or chart, for example node {"kind": "slide", "from": "slide:#258"}',
+    delete: "{target}: remove a slide or shape",
+    format: "{target, format}",
+    move: "{target, anchor, position} or {target, offset}",
+    copy: "{source, target, position}",
+    group: "{target, shapes}",
+    ungroup: "{target}",
+    "insert-row": "{anchor, position}",
+    "insert-column": "{target, index}",
+    resize: "{target, extent}",
+    "append-chart-category": "{target, label, values}",
+    "remove-chart-category": "{target, category}",
+    "relabel-chart-category": "{target, category, label}",
+    "reorder-chart-categories": "{target, order}",
+    "add-chart-series": "{target, name, values}",
+    "drop-chart-series": "{target, series}",
+    "relabel-chart-series": "{target, series, name}",
+  },
+};
+
+/** The engine's refusal of an op name it does not know: `options.ops[].op is not a supported Agent API operation`
+ * from the request check, `unknown operation` from the transaction, `unknown-op` as a refusal code. */
+const UNKNOWN_OP_REFUSAL = /ops\[\]\.op\b|\bunknown operation\b|\bunknown-op\b/;
+
+/** The words of an op name, lowercased and sorted: `replace_text`, `replaceText`, `text.replace` and
+ * `replace-text` all have the words `replace text`. */
+function opWords(name: string): string {
+  return name
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter((word) => word !== "")
+    .sort()
+    .join(" ");
+}
+
+/** The op of `known` that `name` spells differently, if exactly one has its words. */
+function opMeant(name: string, known: Readonly<Record<string, string>>): string | undefined {
+  const words = opWords(name);
+  const matches = Object.keys(known).filter((op) => opWords(op) === words);
+  return matches.length === 1 ? matches[0] : undefined;
+}
+
 export class WorkspaceTools {
   readonly #service: RoomService;
   readonly #roomId: string;
   readonly #inspector: WorkspaceDocInspector | undefined;
   readonly #renderer: VisualRenderer | undefined;
   readonly #packs: PackRefresher | undefined;
+  readonly #packManifests: (() => Promise<PackManifest[]>) | undefined;
+  readonly #readOnly: ReadOnlyMode | undefined;
 
   constructor(options: WorkspaceToolsOptions) {
     this.#service = options.service;
@@ -241,11 +548,17 @@ export class WorkspaceTools {
     this.#inspector = options.inspector;
     this.#renderer = options.renderer;
     this.#packs = options.packs;
+    this.#packManifests = options.packManifests;
+    this.#readOnly = options.readOnly;
   }
 
   /** Run one validated call as `actor` (an agent). Never throws: a failure is a result with `isError`. */
   async call(actor: RoomActor, call: McpWorkspaceCall): Promise<ToolResult> {
     try {
+      if (WRITE_TOOLS[call.name] === true) {
+        const refused = this.#readOnlyRefusal();
+        if (refused !== null) return refused;
+      }
       switch (call.name) {
         case "workspace_list":
           return await this.#workspaceList(actor, call.arguments);
@@ -267,6 +580,11 @@ export class WorkspaceTools {
     } catch (error) {
       return failureOf(error);
     }
+  }
+
+  /** The refusal of a write tool in a read-only workspace, else `null`. */
+  #readOnlyRefusal(): ToolResult | null {
+    return this.#readOnly === undefined ? null : failure(readOnlyFailure(this.#readOnly));
   }
 
   // Shared ------------------------------------------------------------------------------------------------
@@ -331,9 +649,54 @@ export class WorkspaceTools {
         mentions: thread.mentions.map((mention) => mention.id),
         messages: thread.messages.map((message) => ({ author: message.author.id, body: message.body, created_at: message.created_at })),
       })),
-      packs: this.#packs?.listPacks ? await this.#packs.listPacks() : [],
+      packs: await this.#packList(actor, state),
     };
     return okResult(data);
+  }
+
+  /** The packs of the workspace: from the manifests, each binding described, when the server has them; else the
+   * refresher's summaries. */
+  async #packList(actor: RoomActor, state: RoomState): Promise<unknown[]> {
+    if (this.#packManifests === undefined) return this.#packs?.listPacks ? await this.#packs.listPacks() : [];
+    const manifests = await this.#packManifests();
+    const books = new Map<string, Promise<SourceBook>>();
+    const bookOf = (name: string): Promise<SourceBook> => {
+      let book = books.get(name);
+      if (book === undefined) {
+        book = this.#sourceBook(actor, state, name);
+        books.set(name, book);
+      }
+      return book;
+    };
+    const packs: unknown[] = [];
+    for (const manifest of manifests) {
+      const definitions: BindingDefinition[] = [];
+      for (const binding of manifest.bindings) {
+        const source = manifest.sources.find((candidate) => candidate.id === binding.source_id);
+        let read: SourceRead;
+        if (source === undefined) read = { address: null, problem: `the pack has no source ${JSON.stringify(binding.source_id)}` };
+        else if (source.kind !== "xlsx") read = { address: null, problem: `a ${source.kind} source is read by pack_link_refresh only` };
+        else read = readSource(binding, await bookOf(source.doc_name));
+        definitions.push(bindingDefinition(binding, source?.doc_name ?? null, read));
+      }
+      packs.push({ pack: manifest.pack_id, bindings: manifest.bindings.map((binding) => binding.id), title: manifest.name, definitions });
+    }
+    return packs;
+  }
+
+  /** The room's head of the source workbook `name`, parsed. */
+  async #sourceBook(actor: RoomActor, state: RoomState, name: string): Promise<SourceBook> {
+    const held = state.documents.find((document) => document.head.name === name);
+    if (held === undefined) return { problem: `the room holds no document ${JSON.stringify(name)}` };
+    if (held.head.format !== "xlsx") return { problem: `${name} is ${held.head.format}, not a workbook` };
+    const read = await this.#service.readHead(this.#roomId, actor, name);
+    if (!read.ok) return { problem: `${read.error.code}: ${read.error.message}` };
+    try {
+      return { doc: readDocument("xlsx", read.value.bytes), revision: read.value.head.revision };
+    } catch (error) {
+      if (error instanceof ReadError) return { problem: error.message };
+      throw error;
+    }
   }
 
   // doc_read ----------------------------------------------------------------------------------------------
@@ -366,7 +729,7 @@ export class WorkspaceTools {
     if (args.target !== undefined) data.target = args.target;
     switch (content.view) {
       case "structure":
-        data.nodes = content.nodes.slice(0, max);
+        data.nodes = content.nodes.slice(0, max).map(previewed);
         data.total = content.nodes.length;
         data.truncated = content.nodes.length > max;
         break;
@@ -415,7 +778,7 @@ export class WorkspaceTools {
           continue;
         }
         const { head, bytes } = read.value;
-        let units;
+        let units: { address: string; text: string }[];
         try {
           units = readDocument(head.format, bytes).units();
         } catch (error) {
@@ -423,6 +786,7 @@ export class WorkspaceTools {
           skipped.push({ doc: head.name, reason: error.message });
           continue;
         }
+        units = [...units, ...(await this.#unitsOutsideBody(head, bytes))];
         searched++;
         if (matcher) {
           for (const unit of units) {
@@ -464,6 +828,21 @@ export class WorkspaceTools {
       if (skipped.length > 0) data.skipped = skipped;
       return okResult(data);
     });
+  }
+
+  /** The text of a Word document the built-in reader does not read, as search units at the addresses the
+   * inspector lists: the paragraphs of headers and footers, and comments with their replies. */
+  async #unitsOutsideBody(head: RoomHead, bytes: Uint8Array): Promise<{ address: string; text: string }[]> {
+    if (!this.#inspector || head.format !== "docx") return [];
+    const answered = await this.#inspector.read({ format: head.format, name: head.name, bytes, view: "structure" });
+    if (answered?.view !== "structure") return [];
+    const units: { address: string; text: string }[] = [];
+    for (const node of answered.nodes) {
+      if (node.text === undefined || node.text === "") continue;
+      const outside = node.kind === "comment" || node.kind === "reply" || ((node.kind === "paragraph" || node.kind === "heading") && node.address.startsWith("section:"));
+      if (outside) units.push({ address: node.address, text: node.text });
+    }
+    return units;
   }
 
   // doc_create --------------------------------------------------------------------------------------------
@@ -512,16 +891,19 @@ export class WorkspaceTools {
 
   // doc_edit ----------------------------------------------------------------------------------------------
 
+  /** The batch goes to the room first, and the agent is announced as proposing (or committing) once the room took
+   * it: the activity of the room says what the agent did, so a refused batch, which changed nothing, leaves no row
+   * that reads as a proposal. */
   async #docEdit(actor: RoomActor, args: Args<"doc_edit">): Promise<ToolResult> {
     const { doc, mode, ops } = args;
     const batch = args.message === undefined ? { ops } : { ops, label: args.message };
     const detail = args.message ?? `${ops.length} op${ops.length === 1 ? "" : "s"}`;
-    const edited = await this.#during(actor, mode === "propose" ? "proposing" : "committing", doc, preview(detail, 120), () =>
-      this.#service.edit(this.#roomId, actor, { doc_name: doc, base_revision: args.base_revision, mode, batch }),
-    );
-    if (!edited.ok) return failure(edited.error);
+    const edited = await this.#service.edit(this.#roomId, actor, { doc_name: doc, base_revision: args.base_revision, mode, batch });
+    if (!edited.ok) return await this.#editRefusal(actor, doc, ops, edited.error);
+    await this.#announce(actor, mode === "propose" ? "proposing" : "committing", doc, preview(detail, 120));
+    await this.#announce(actor, "idle", doc, undefined);
     const outcome = edited.value;
-    if (outcome.mode === "propose") return okResult(proposalData(outcome.proposal));
+    if (outcome.mode === "propose") return okResult({ ...proposalData(outcome.proposal), existed: outcome.existed });
     return okResult({
       mode: "commit",
       doc,
@@ -530,6 +912,30 @@ export class WorkspaceTools {
       entry_id: outcome.entry.seq,
       base_sha256: outcome.entry.base_sha256,
     });
+  }
+
+  /** The answer to a refused batch. A refusal of an op name the engine does not know names, in the same answer, the
+   * ops of the document's format, the members each takes, and the op meant when a name only spells one differently
+   * (`replace_text`, `replaceText` or `text.replace` for `replace-text`). */
+  async #editRefusal(actor: RoomActor, doc: string, ops: readonly { op: string }[], refused: RoomFailure): Promise<ToolResult> {
+    if (refused.code !== "BAD_REQUEST" || !UNKNOWN_OP_REFUSAL.test(refused.message)) return failure(refused);
+    const room = await this.#room(actor);
+    const format = room.ok ? room.value.documents.find((document) => document.head.name === doc)?.head.format : undefined;
+    if (format !== "docx" && format !== "xlsx" && format !== "pptx") return failure(refused);
+    const known = EDIT_OPS[format];
+    const unknown = [...new Set(ops.map((op) => op.op).filter((name) => !Object.hasOwn(known, name)))];
+    const meant: Record<string, string> = {};
+    for (const name of unknown) {
+      const op = opMeant(name, known);
+      if (op !== undefined) meant[name] = op;
+    }
+    const named = unknown.map((name) => (meant[name] === undefined ? JSON.stringify(name) : `${JSON.stringify(name)} (did you mean ${meant[name]}?)`));
+    const which = named.length === 0 ? "" : `${named.join(", ")} ${named.length === 1 ? "is not an op" : "are not ops"} of ${format}. `;
+    const message =
+      `${refused.message}. ${which}The ops of ${format} are ${Object.keys(known).join(", ")}; ` +
+      "detail.ops of this answer gives the members of each (the Agent API operation schema).";
+    const detail = { reason: "unknown-op", format, unknown_ops: unknown, ...(Object.keys(meant).length > 0 ? { did_you_mean: meant } : {}), ops: known };
+    return errorResult("BAD_REQUEST", message, detail);
   }
 
   // doc_inspect_visual ------------------------------------------------------------------------------------
@@ -592,17 +998,32 @@ export class WorkspaceTools {
       return errorResult("BAD_REQUEST", "this server has no pack refresher, so there is no pack manifest to refresh", { reason: "no-pack-refresher" });
     }
     const mode = args.mode ?? "propose";
+    // The room answers a proposal equal to an open one with that open proposal, and the refresher reports it as
+    // updated all the same. The proposals open before the refresh tell such a binding apart: it wrote nothing, so
+    // it is `unchanged` with `existed: true` and its proposal id, not counted as updated. (A person opening the
+    // same proposal while the refresh runs still reads as updated.)
+    let openBefore = new Set<string>();
+    if (mode === "propose") {
+      const room = await this.#room(actor);
+      if (!room.ok) return failure(room.error);
+      openBefore = new Set(room.value.proposals.flatMap((proposal) => (proposal.status === "open" ? [proposal.proposal_id] : [])));
+    }
     const activity: RoomAgentActivity = mode === "commit" ? "committing" : "proposing";
     const report = (detail: string): Promise<void> => this.#announce(actor, activity, null, preview(detail, 120));
     const result = await this.#during(actor, activity, null, `refresh ${args.pack}`, () =>
       packs.refreshPack({ roomService: this.#service, roomId: this.#roomId, actor, pack: args.pack, bindings: args.bindings, mode, report }),
     );
+    const bindings = result.bindings.map((binding) =>
+      binding.status === "updated" && binding.proposal_id !== undefined && openBefore.has(binding.proposal_id)
+        ? { ...binding, status: "unchanged" as const, existed: true }
+        : binding,
+    );
     return okResult({
       pack: result.pack,
       mode: result.mode,
-      bindings: result.bindings,
-      updated: result.bindings.filter((binding) => binding.status === "updated").length,
-      failed: result.bindings.filter((binding) => binding.status === "failed").length,
+      bindings,
+      updated: bindings.filter((binding) => binding.status === "updated").length,
+      failed: bindings.filter((binding) => binding.status === "failed").length,
     });
   }
 

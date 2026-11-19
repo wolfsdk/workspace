@@ -1,7 +1,7 @@
-# Builds, packs and checks @wolfsdk/protocol, @wolfsdk/server, @wolfsdk/mcp, @wolfsdk/packs and
-# @wolfsdk/workspace (scripts/pack.ts) and publishes the checked tarballs to npm with provenance
-# on packages-v<version> tags. The five share one version. workflow_dispatch builds, packs and
-# checks without publishing.
+# Builds, packs and checks @wolfsdk/protocol, @wolfsdk/assistant, @wolfsdk/server, @wolfsdk/mcp,
+# @wolfsdk/packs and @wolfsdk/workspace (scripts/pack.ts) and publishes the checked tarballs to
+# npm with provenance on packages-v<version> tags. The six share one version. workflow_dispatch
+# builds, packs and checks without publishing.
 #
 # The publish job authenticates through the npm trusted publisher for this repository and
 # workflow (environment npm) and publishes directly. A trusted publisher can only be added
@@ -39,7 +39,7 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/')
         run: |
           set -euo pipefail
-          for dir in protocol server mcp packs workspace-cli; do
+          for dir in protocol assistant server mcp packs workspace-cli; do
             version=$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1], "rb"))["version"])' "packages/$dir/package.json")
             if [ "$GITHUB_REF_NAME" != "packages-v$version" ]; then
               echo "publish-packages: tag $GITHUB_REF_NAME does not name version $version of packages/$dir" >&2
@@ -95,17 +95,34 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           set -euo pipefail
-          npm install --global npm@^11.15.0
-          if [ -n "${NODE_AUTH_TOKEN:-}" ]; then
-            npm config set //registry.npmjs.org/:_authToken "$NODE_AUTH_TOKEN" --location project
-          fi
-          # A package comes after the ones it depends on: protocol, server, packs, mcp, workspace.
-          for name in protocol server packs mcp workspace; do
+          # A package comes after the ones it depends on: protocol, assistant, server, packs, mcp,
+          # workspace. Every tarball is resolved before the first publish, and a tarball in
+          # SHA256SUMS that this order leaves out fails the job, so a release never publishes a
+          # package whose @wolfsdk dependency is missing from npm.
+          names="protocol assistant server packs mcp workspace"
+          tarballs=()
+          for name in $names; do
             tarball=$(awk -v name="wolfsdk-$name-" 'index($2, name) == 1 {print $2}' SHA256SUMS)
             if [ -z "$tarball" ] || [ ! -f "$tarball" ]; then
               echo "publish-packages: no tarball for @wolfsdk/$name in SHA256SUMS" >&2
               exit 1
             fi
+            tarballs+=("$tarball")
+          done
+          while read -r _ listed; do
+            case " ${tarballs[*]} " in
+              *" $listed "*) ;;
+              *)
+                echo "publish-packages: SHA256SUMS lists $listed, which the publish order leaves out" >&2
+                exit 1
+                ;;
+            esac
+          done <SHA256SUMS
+          npm install --global npm@^11.15.0
+          if [ -n "${NODE_AUTH_TOKEN:-}" ]; then
+            npm config set //registry.npmjs.org/:_authToken "$NODE_AUTH_TOKEN" --location project
+          fi
+          for tarball in "${tarballs[@]}"; do
             if [ -n "${NODE_AUTH_TOKEN:-}" ]; then
               npm stage publish --provenance --access public --registry https://registry.npmjs.org "$PWD/$tarball"
               echo "Staged $tarball; approve it with 2FA under Staged Packages on npmjs.com." >>"$GITHUB_STEP_SUMMARY"

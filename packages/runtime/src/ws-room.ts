@@ -5,10 +5,14 @@
 // request only with the room events it causes, and refuses one with an `error` event that carries its
 // `request_id`: `request` turns that into a promise.
 //
+// The assistant (`wolfsdk.assistant.v1`) travels on the same socket beside the room, never inside it: a message
+// `isAssistantMessage` claims goes to `onAssistant` alone, and `sendAssistant` writes one with the caller's own
+// `request_id`. Neither touches the room's events, requests, `seq` or status.
+//
 // This file also holds the zero-WASM half of a shared link: `renderDisplayListSnapshot` paints the display-list
 // pages a server sends onto 2D canvases with the vector renderer alone. It never fetches or instantiates an engine
 // module, so a viewer of a shared link downloads no `.wasm`.
-import type { RoomClientMessage, RoomConflictDetail, RoomServerEvent } from "@wolfsdk/protocol/workspace";
+import { type AssistantClientMessage, isAssistantMessage, type RoomClientMessage, type RoomConflictDetail, type RoomServerEvent } from "@wolfsdk/protocol/workspace";
 import { parseDisplayList } from "./vector/abi.ts";
 import type { DisplayList } from "./vector/model.ts";
 import { type Ctx2D, type RenderOptions, type RenderStats, renderPage } from "./vector/render.ts";
@@ -31,11 +35,14 @@ export type ConnectionStatus = "connecting" | "live" | "reconnecting" | "closed"
 export type RoomRequest = RoomClientMessage extends infer M ? (M extends { request_id: string } ? Omit<M, "request_id"> : never) : never;
 
 export type RoomClientOptions = {
-  /** `ws(s)://host/ws?token=...` */
+  /** `ws(s)://host/ws?token=...`, or `ws(s)://host/ws` behind a hosting front that authenticates the upgrade itself. */
   url: string;
   roomId: string;
-  /** Every event of the room, in order, including `error` events. */
+  /** Every event of the room, in order, including `error` events. Never an assistant message. */
   onEvent(event: RoomServerEvent): void;
+  /** Every message of `wolfsdk.assistant.v1` the server sends this connection, parsed but not validated. Without
+   * it they are dropped: an assistant message never reaches `onEvent`, a pending request, `lastSeq` or the status. */
+  onAssistant?(event: unknown): void;
   onStatus?(status: ConnectionStatus): void;
   /** The `seq` to resume after on the first connect. Default null: start from a snapshot. */
   sinceSeq?: number | null;
@@ -103,13 +110,14 @@ export class RoomClient {
     };
     socket.onmessage = (message) => {
       if (this.#socket !== socket || typeof message.data !== "string") return;
-      let event: RoomServerEvent;
+      let event: unknown;
       try {
-        event = JSON.parse(message.data) as RoomServerEvent;
+        event = JSON.parse(message.data);
       } catch {
         return;
       }
-      this.#receive(event);
+      if (isAssistantMessage(event)) return void this.#options.onAssistant?.(event);
+      this.#receive(event as RoomServerEvent);
     };
     socket.onerror = () => undefined;
     socket.onclose = () => {
@@ -149,6 +157,14 @@ export class RoomClient {
     this.#pending.set(requestId, { until, resolve, reject });
     this.#write({ ...message, request_id: requestId } as RoomClientMessage);
     return promise;
+  }
+
+  /** Write one message of `wolfsdk.assistant.v1` as given, `request_id` included: its answers come to `onAssistant`,
+   * not to `request`. True when it was written; false, with nothing sent, while the room is not live. */
+  sendAssistant(message: AssistantClientMessage): boolean {
+    if (this.#status !== "live" || this.#socket === null) return false;
+    this.#socket.send(JSON.stringify(message));
+    return true;
   }
 
   #join(): void {
@@ -235,12 +251,13 @@ export class RoomClient {
   }
 }
 
-/** The WebSocket URL of `/ws` on the page's own origin, with the token as a query parameter (a browser WebSocket
- * cannot set a header). */
-export function roomSocketUrl(origin: string, token: string): string {
+/** The WebSocket URL of `/ws` on the page's own origin. With a token it rides as the `token` query parameter (a
+ * browser WebSocket cannot set a header). With null the URL has no `token` parameter at all: behind a hosting front
+ * the upgrade carries the session cookie and the front sets the upstream `Authorization` itself. */
+export function roomSocketUrl(origin: string, token: string | null): string {
   const url = new URL("/ws", origin);
   url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
-  url.searchParams.set("token", token);
+  if (token !== null) url.searchParams.set("token", token);
   return url.toString();
 }
 

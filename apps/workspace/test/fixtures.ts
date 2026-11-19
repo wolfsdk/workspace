@@ -1,5 +1,7 @@
 // Room values for the tests, small and valid against `wolfsdk.room.v1`.
 import type { RoomActor, RoomHead, RoomPinnedBatch, RoomProposal, RoomServerEvent, RoomSessionEntry, RoomState, RoomThread } from "@wolfsdk/protocol/workspace";
+import type { PublicShare, Share } from "../src/lib/api.ts";
+import type { HostedSession, PageIo } from "../src/lib/session.ts";
 
 export const ALICE: RoomActor = { kind: "user", id: "alice", name: "Alice Chen" };
 export const SCOUT: RoomActor = { kind: "agent", id: "scout", name: "Scout" };
@@ -128,4 +130,61 @@ export function activityEvent(
   detail?: string,
 ): Extract<RoomServerEvent, { type: "agent.activity" }> {
   return { type: "agent.activity", seq, agent, doc_name: doc, activity, ...(detail ? { detail } : {}), at: "2026-11-13T18:40:00Z" };
+}
+
+/** What a hosting front answers for `GET /-/session` while Alice is signed in. */
+export const HOSTED: HostedSession = { account: { email: "alice@acme.example", name: "Alice Chen" }, signIn: "/-/sign-in", signOut: "/-/sign-out" };
+
+export const jsonResponse = (status: number, body: unknown): Response =>
+  new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+
+/** One request a page made: its method, its URL as given to `fetch`, and its `Authorization` header, if any. */
+export type SeenRequest = { method: string; url: string; authorization: string | null };
+
+/** A browser for the page with no browser: `fetch` records every request and answers from `respond` (which may throw,
+ * as a failed request does), and `navigate` records where the page went. */
+export function fakePage(respond: (request: SeenRequest) => Response | Promise<Response>): { io: PageIo; requests: SeenRequest[]; visited: string[] } {
+  const requests: SeenRequest[] = [];
+  const visited: string[] = [];
+  const io: PageIo = {
+    async fetch(input, init) {
+      const request = { method: init?.method ?? "GET", url: input, authorization: new Headers(init?.headers).get("authorization") };
+      requests.push(request);
+      return respond(request);
+    },
+    navigate(path) {
+      visited.push(path);
+    },
+  };
+  return { io, requests, visited };
+}
+
+/** A share token in the shape the server makes them: 43 characters of base64url. A made-up value, not a secret. */
+export const SHARE_TOKEN = "share-token-".padEnd(43, "x");
+
+/** The live link of memo.docx in q3-close, as a member sees it. */
+export function shareLink(over: Partial<Share> = {}): Share {
+  return {
+    token: SHARE_TOKEN,
+    path: `/s/${SHARE_TOKEN}`,
+    room_id: "q3-close",
+    doc_name: "memo.docx",
+    created_at: "2026-11-18T19:05:00Z",
+    created_by: ALICE,
+    ...over,
+  };
+}
+
+/** What `GET /api/share/<token>` answers for that link on a server started with `--share-connect`. */
+export function publicShare(over: Partial<PublicShare> = {}): PublicShare {
+  return {
+    room_id: "q3-close",
+    doc_name: "memo.docx",
+    format: "docx",
+    revision: 3,
+    updated_at: "2026-11-18T19:00:00Z",
+    shared_by: "Alice Chen",
+    connect: `/-/connect/instructions?share=${SHARE_TOKEN}`,
+    ...over,
+  };
 }

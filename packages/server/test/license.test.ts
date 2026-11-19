@@ -1,7 +1,7 @@
 // The limits of the licence, as the engine reports them: how many workspaces a server serves and how many
 // seats it admits (a seat is a signed-in user, or an agent that signs in with an identity of its own). A refusal
 // is LICENSE_LIMIT and changes nothing.
-import { afterEach, describe, expect, setSystemTime, test } from "bun:test";
+import { afterEach, describe, expect, setDefaultTimeout, setSystemTime, test } from "bun:test";
 import { realpathSync } from "node:fs";
 import { link, mkdir, mkdtemp, rm, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -26,6 +26,9 @@ import {
   snapshotOf,
   steppingClock,
 } from "./fixtures/harness.ts";
+
+// Writes are flushed to disk and processes are started: on a busy host one test can take many seconds.
+setDefaultTimeout(120_000);
 
 const user = (n: number): RoomActor => ({ kind: "user", id: `user-${n}`, name: `User ${n}` });
 

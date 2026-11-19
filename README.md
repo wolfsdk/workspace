@@ -150,6 +150,8 @@ paths of this workspace, and reaches users inside `@wolfsdk/review` and the work
 
 ## Commands
 
+To work on the editor, start with [the contributor guide](CONTRIBUTING.md) for a local room server, a live browser UI, a sample document, and the pull request workflow.
+
 Run from the repository root with [Bun](https://bun.sh) 1.4 or later.
 
 ```sh

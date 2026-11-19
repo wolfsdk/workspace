@@ -1,7 +1,9 @@
 /**
  * Main view of a workbook in the review plugin: the sheets of the open revision as a read-only
- * grid, with every cell the reviewed change sets touched marked by the reviewer's decision on
- * it, and a toggle to the engine's printed pages (the shell's page view, passed in as `pages`).
+ * grid, with every cell the reviewed change sets touched outlined and tagged with its change
+ * type as a changed paragraph is on a page (the selected change's outline ringed), filled by the
+ * reviewer's decision on it, and a toggle to the engine's printed pages (the shell's page view,
+ * passed in as `pages`).
  *
  * It reads `sheet_viewport` windows from the reactor kernel and holds no editing state, so it
  * stays in the review entry; the sheets plugin (toolbar, menus, in-cell editor) is a lazy chunk
@@ -22,12 +24,14 @@ import {
   cellAt,
   cellBoxes,
   cellKey,
+  cellOutlines,
   cellRect,
   changedCells,
   layoutOf,
   numToCol,
   parseCellAddress,
   revealOffset,
+  selectedCellKey,
   sheetMarks,
   sheetTabs,
   usedExtent,
@@ -108,6 +112,14 @@ export function SheetReviewView({ host, pages }: MainViewProps) {
     return { win, layout, boxes: cellBoxes(reply, layout, win.rows, win.cols, onSheet) };
   }, [reply, onSheet, more]);
 
+  // The change selected in the changes panel (or by a click on its cell) rings its cell's outline.
+  const selectedChange = store.ui.selectedChange;
+  const selectedKey = useMemo(() => selectedCellKey(store.history(), selectedChange), [store, store.version, snap.history, selectedChange]);
+  const outlines = useMemo(
+    () => (model && sheet ? cellOutlines(model.boxes, changed, sheet.sheetId, selectedKey, [model.layout.width, model.layout.height]) : []),
+    [model, changed, sheet?.sheetId, selectedKey],
+  );
+
   // Bring the focused cell into view once its sheet is drawn.
   useEffect(() => {
     const el = scroller.current;
@@ -127,8 +139,11 @@ export function SheetReviewView({ host, pages }: MainViewProps) {
     if (!el || !model || !sheet) return;
     // The sticky row headers float over the scrolled cells; a click on them picks nothing.
     if (event.target instanceof Element && event.target.closest(".we-rv-sheet-rowheads")) return;
+    // A click on a changed cell's outline or tag picks that cell, even where the tag lies over another.
+    const outline = event.target instanceof Element ? event.target.closest<HTMLElement>(".we-rv-sheet-outline") : null;
     const box = el.getBoundingClientRect();
-    const hit = cellAt(model.layout, event.clientX - box.left - ROW_HEADER_PX, event.clientY - box.top);
+    const at = outline?.dataset.cell ? parseCellAddress(cellAddress(sheet.sheetId, outline.dataset.cell)) : null;
+    const hit = at ?? cellAt(model.layout, event.clientX - box.left - ROW_HEADER_PX, event.clientY - box.top);
     if (!hit) return;
     const a1 = `${numToCol(hit.col)}${hit.row}`;
     setFocus({ sheetId: sheet.sheetId, a1, row: hit.row, col: hit.col });
@@ -268,12 +283,37 @@ export function SheetReviewView({ host, pages }: MainViewProps) {
                         style={style}
                         data-cell={box.a1}
                         data-decision={hit?.decision}
-                        title={hit ? `${box.a1}: ${DECISION_WORDS[hit.decision]} change` : box.a1}
+                        title={hit ? `${box.a1}: ${hit.change}, ${DECISION_WORDS[hit.decision]} change` : box.a1}
                       >
                         {box.text}
                       </div>
                     );
                   })}
+                  {outlines.map((o) => (
+                    // The page outline's look; a click on it bubbles to `pick`, which picks its cell.
+                    <div
+                      class={`we-review-box we-review-${o.change} we-rv-sheet-outline${o.selected ? " we-review-selected" : ""}${
+                        o.decision === "reject" ? " we-review-rejected" : ""
+                      }`}
+                      key={o.key}
+                      style={{ left: `${ROW_HEADER_PX + o.box.x}px`, top: `${o.box.y}px`, width: `${o.box.w}px`, height: `${o.box.h}px` }}
+                      aria-hidden="true"
+                      data-testid={`review-sheet-outline-${o.a1}`}
+                      data-cell={o.a1}
+                      data-change={o.change}
+                      data-selected={o.selected}
+                    >
+                      <span
+                        class={`we-review-tag${o.tag.free ? "" : " we-review-tag-on-demand"}`}
+                        style={{
+                          left: `calc(${o.tag.x - o.box.x}px - var(--we-review-border))`,
+                          top: `calc(${o.tag.y - o.box.y}px - var(--we-review-border))`,
+                        }}
+                      >
+                        {o.change}
+                      </span>
+                    </div>
+                  ))}
                 </div>
               </div>
             ) : read.error === null ? (

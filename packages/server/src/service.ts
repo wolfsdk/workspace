@@ -23,12 +23,44 @@ import type {
   WorkspaceDocFormat,
 } from "@wolfsdk/protocol/workspace";
 
+/** The stable code of a refusal that the plan of the customer caused, not the licence: the limit that was reached.
+ * The message of such a refusal starts with it. On the wire the code stays `LICENSE_LIMIT`, the one code of the
+ * contract for a limit, so a client that knows nothing of plans still reads the refusal correctly. */
+export type PlanLimitReason = "plan-seat-limit" | "plan-workspace-limit";
+
+/** The stable code of the refusal of a write that a read-only workspace gives. The message of such a refusal starts
+ * with it, and ends with the reason the workspace is read-only and the way out of it. On the wire the code is
+ * `LICENSE_LIMIT`, as for a plan limit: the workspace is not allowed to change, and a client that knows nothing of
+ * read-only mode reads the refusal as the limit of what it may do. */
+export type ReadOnlyReason = "workspace-read-only";
+
+/** A workspace that serves reads and refuses every write, with the words that say why and what to do about it. */
+export type ReadOnlyMode = {
+  /** Why the workspace is read-only, in the words of the party that runs it ("The trial ended on 2026-11-28."). */
+  reason: string;
+  /** What to do about it ("https://example.com/upgrade"): it ends the message of a refusal. */
+  upgrade: string;
+};
+
+/** A cap a plan puts on the licence. The server admits the smaller of the two limits. */
+export type PlanCap = {
+  /** The most seats the plan admits, or `null` for no limit of the plan. */
+  maxSeats: number | null;
+  /** The most workspaces the plan serves, or `null` for no limit of the plan. */
+  maxWorkspaces: number | null;
+  /** What the plan is called in a refusal ("the free plan admits..."). Default `current`. */
+  name?: string;
+  /** What to do about a refusal, in the words of the party that sells the plan: it ends the message. */
+  upgrade: string;
+};
+
 /** Why a call did not happen. `REVISION_MISMATCH` carries the head the writer must rebase on. `ENGINE_FAILED`
  * means the engine could not run the request: nothing was stored, the request was not judged, and the same
- * request can succeed later. `BAD_REQUEST` is a request the engine judged and refused. */
+ * request can succeed later. `BAD_REQUEST` is a request the engine judged and refused. `reason` is set on a
+ * `LICENSE_LIMIT` that a plan or read-only mode caused. */
 export type RoomFailure =
   | { code: "REVISION_MISMATCH"; message: string; detail: RoomConflictDetail }
-  | { code: RoomErrorCode; message: string };
+  | { code: RoomErrorCode; message: string; reason?: PlanLimitReason | ReadOnlyReason };
 
 export type Result<T> = { ok: true; value: T } | { ok: false; error: RoomFailure };
 
@@ -44,9 +76,12 @@ export type EditRequest = {
   batch: RoomBatch;
 };
 
+/** What `edit` answers. A proposal says whether it already existed: a batch whose document, base revision and ops
+ * equal those of a proposal already open (a pack refreshed twice, an agent repeating its edit) opens nothing, and
+ * the answer is that open proposal with `existed: true`. A proposal the edit opened has `existed: false`. */
 export type EditOutcome =
   | { mode: "commit"; head: RoomHead; entry: RoomSessionEntry }
-  | { mode: "propose"; proposal: RoomProposal };
+  | { mode: "propose"; proposal: RoomProposal; existed: boolean };
 
 /** `proposal.decide` of the room contract. */
 export type DecideRequest = { proposal_id: string; decision: "approve" | "reject" };
@@ -112,7 +147,8 @@ export interface RoomService {
 
   /** `doc.edit`: commit a batch to the head, or hold it as a proposal. A stale `base_revision` is
    * `REVISION_MISMATCH`; a batch the engine refuses commits nothing, and is `BAD_REQUEST` when the engine
-   * judged it and `ENGINE_FAILED` when the engine could not run it. Edits of one document are serialized. */
+   * judged it and `ENGINE_FAILED` when the engine could not run it. Edits of one document are serialized. A
+   * proposal equal to an open one answers with that proposal and `existed: true` (see `EditOutcome`). */
   edit(room_id: string, actor: RoomActor, request: EditRequest): Promise<Result<EditOutcome>>;
 
   /** `proposal.decide`: approve (commit the proposal's batches, replayed as stored, with the proposal's id and the
@@ -132,4 +168,25 @@ export interface RoomService {
    * room, or older than the retained events. The promise rejects when the stored room is damaged (a stored
    * event or the snapshot no longer validates). */
   join(room_id: string, actor: RoomActor, since_seq: number | null, listener: RoomListener): Promise<Result<RoomSubscription>>;
+}
+
+/** The live link of a shared document: whoever holds `token` may view the document with no account. */
+export type ShareLink = { token: string; room_id: string; doc_name: string; created_by: RoomActor; created_at: string };
+
+/** The share links of a server. Links live in the room database, so they survive a restart and travel with its
+ * backup. A document has at most one live link, and a link ends with its document. */
+export interface ShareLinks {
+  /** The live link of a document, or `null`. */
+  shareOf(room_id: string, doc_name: string): ShareLink | null;
+
+  /** Make the link of a document, or answer the live one with `existed: true`. Fails as an unknown room or
+   * document does, and as any write does while the workspace is read-only. */
+  share(room_id: string, doc_name: string, by: RoomActor): Promise<Result<{ link: ShareLink; existed: boolean }>>;
+
+  /** End the live link of a document, also while the workspace is read-only. `false` when it had none. An ended
+   * token never resolves again. */
+  unshare(room_id: string, doc_name: string): boolean;
+
+  /** The live link a token names, or `null`: an unknown token and an ended one cannot be told apart. */
+  resolveShare(token: string): ShareLink | null;
 }

@@ -40,6 +40,8 @@ export type StageProps = {
   shareMode?: boolean;
   /** In `shareMode`, the pages to paint instead of the snapshot the server holds for the open document. */
   snapshotPages?: readonly Page[];
+  /** A guest: local edits go out as a proposal only, and the stage offers no decision and no download. */
+  guest?: boolean;
 };
 
 type Opened = { doc: string; revision: number; sha256: string; mode: "head" | "review" | "pdf" };
@@ -102,6 +104,7 @@ function EditorStage(props: StageProps) {
       event.preventDefault();
       const current = latest.current;
       if (current.proposal === null) return;
+      if (current.guest) return current.notify("warning", "A guest proposes edits. A member of the workspace approves or rejects them.");
       if (current.actor.kind === "agent") return current.notify("warning", "Only a user can approve or reject a proposal.");
       const outcome = outcomeOf(event.detail.decision.summary);
       if (outcome === "approve" || outcome === "reject") return current.onDecide(current.proposal, outcome);
@@ -292,6 +295,7 @@ function EditorStage(props: StageProps) {
   };
 
   const isAgent = actor.kind === "agent";
+  const guest = props.guest === true;
   const reviewing = proposal !== null && opened?.mode === "review";
   const size = proposal ? proposalSize(proposal) : null;
   const showElement = doc !== null && format !== null && isReviewable(format);
@@ -312,7 +316,7 @@ function EditorStage(props: StageProps) {
             ) : null}
           </div>
           <div class="banner-actions">
-            {proposal.preview_sha256 ? (
+            {proposal.preview_sha256 && !guest ? (
               <button type="button" class="button button--small button--quiet" onClick={() => props.onDownloadPreview(proposal)}>
                 <Icon name="download" size={14} />
                 Preview
@@ -321,26 +325,30 @@ function EditorStage(props: StageProps) {
             <button type="button" class="button button--small button--quiet" onClick={props.onExitReview}>
               Back to head
             </button>
-            <button
-              type="button"
-              class="button button--small button--danger"
-              disabled={isAgent || props.deciding || !reviewing}
-              title={isAgent ? "Only a user can reject a proposal" : undefined}
-              onClick={() => props.onDecide(proposal, "reject")}
-            >
-              <Icon name="x" size={14} />
-              Reject Proposal
-            </button>
-            <button
-              type="button"
-              class="button button--small button--success"
-              disabled={isAgent || props.deciding || !reviewing}
-              title={isAgent ? "Only a user can approve a proposal" : undefined}
-              onClick={() => props.onDecide(proposal, "approve")}
-            >
-              <Icon name="check" size={14} />
-              {props.deciding ? "Deciding" : "Approve Proposal"}
-            </button>
+            {guest ? null : (
+              <>
+                <button
+                  type="button"
+                  class="button button--small button--danger"
+                  disabled={isAgent || props.deciding || !reviewing}
+                  title={isAgent ? "Only a user can reject a proposal" : undefined}
+                  onClick={() => props.onDecide(proposal, "reject")}
+                >
+                  <Icon name="x" size={14} />
+                  Reject Proposal
+                </button>
+                <button
+                  type="button"
+                  class="button button--small button--success"
+                  disabled={isAgent || props.deciding || !reviewing}
+                  title={isAgent ? "Only a user can approve a proposal" : undefined}
+                  onClick={() => props.onDecide(proposal, "approve")}
+                >
+                  <Icon name="check" size={14} />
+                  {props.deciding ? "Deciding" : "Approve Proposal"}
+                </button>
+              </>
+            )}
           </div>
         </div>
       ) : (
@@ -373,17 +381,19 @@ function EditorStage(props: StageProps) {
                 value={label}
                 onInput={(e) => setLabel(e.currentTarget.value)}
               />
-              <button type="submit" class="button button--small" disabled={local === 0 || busy !== null || conflict !== null}>
+              <button type="submit" class={`button button--small${guest ? " button--primary" : ""}`} disabled={local === 0 || busy !== null || conflict !== null}>
                 {busy === "propose" ? "Proposing" : "Propose Edit"}
               </button>
-              <button
-                type="button"
-                class="button button--small button--primary"
-                disabled={local === 0 || busy !== null || conflict !== null}
-                onClick={() => void send("commit")}
-              >
-                {busy === "commit" ? "Committing" : "Commit Edit"}
-              </button>
+              {guest ? null : (
+                <button
+                  type="button"
+                  class="button button--small button--primary"
+                  disabled={local === 0 || busy !== null || conflict !== null}
+                  onClick={() => void send("commit")}
+                >
+                  {busy === "commit" ? "Committing" : "Commit Edit"}
+                </button>
+              )}
             </form>
           ) : null}
         </div>
@@ -422,10 +432,12 @@ function EditorStage(props: StageProps) {
           ) : (
             <EmptyState title={`${doc.name} is a PDF`}>
               <p>The room keeps PDF documents read-only. Agents read and inspect them through MCP.</p>
-              <button type="button" class="button button--small" onClick={() => void downloadHead()}>
-                <Icon name="download" size={14} />
-                Download head
-              </button>
+              {guest ? null : (
+                <button type="button" class="button button--small" onClick={() => void downloadHead()}>
+                  <Icon name="download" size={14} />
+                  Download head
+                </button>
+              )}
             </EmptyState>
           )}
         </div>

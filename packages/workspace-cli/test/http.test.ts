@@ -1,15 +1,22 @@
 // The unified port of `serve`: the UI, the API, the room WebSocket and the MCP endpoint answer on one
 // `Bun.serve`, over a real room server on a temporary directory with the in-memory engine of the MCP tests.
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ReactorPipeRequest, RoomActor, RoomServerEvent } from "@wolfsdk/protocol/workspace";
+import { checkPack, DirectoryStore } from "@wolfsdk/packs";
 import { EngineFault, EngineRefusal, type EngineWorker, RoomServer, type WorkerPool } from "@wolfsdk/server";
 import { MemoryEngine, wordDocument } from "../../mcp/test/fixtures/memory-engine.ts";
-import { binding, docx, manifest, manifestBytes, QUARTERS, xlsx } from "../../packs/test/fixtures.ts";
+import { LocalEngine } from "../../packs/test/evaluators.ts";
+import { binding, docx, manifest, manifestBytes, partText, QUARTERS, STYLE, xlsx } from "../../packs/test/fixtures.ts";
+import workspacePackage from "../package.json" with { type: "json" };
+import { PLAN_READ_ONLY_REASONS, type PlanReadOnly, type PlanReadOnlyReason, planReadOnlyMode } from "../src/errors.ts";
 import { formatOfName, resolveInside, type SnapshotInput, startWorkspaceServer, tokenOf, type WorkspaceServer, type WorkspaceServerOptions } from "../src/http.ts";
 import { engineSnapshot } from "../src/run.ts";
+
+// Writes are flushed to disk and sockets are opened: on a busy host one test can take many seconds.
+setDefaultTimeout(120_000);
 
 const ALICE: RoomActor = { kind: "user", id: "alice", name: "Alice" };
 const ROBOT: RoomActor = { kind: "agent", id: "robot", name: "Robot" };
@@ -154,8 +161,8 @@ describe("the API", () => {
     expect(anonymous.status).toBe(401);
     expect(anonymous.headers.get("www-authenticate")).toBe("Bearer");
     expect((await call("/api/me", { headers: auth("wrong") })).status).toBe(401);
-    expect(await (await call("/api/me", { headers: auth() })).json()).toEqual({ actor: ALICE });
-    expect(await (await call("/api/me?token=t-robot")).json()).toEqual({ actor: ROBOT });
+    expect(await (await call("/api/me", { headers: auth() })).json()).toEqual({ actor: ALICE, guest: null });
+    expect(await (await call("/api/me?token=t-robot")).json()).toEqual({ actor: ROBOT, guest: null });
     expect((await call("/api/nothing", { headers: auth() })).status).toBe(404);
   });
 
@@ -229,6 +236,77 @@ describe("the API", () => {
     expect(body.report.documents[0]?.sha256_after).toMatch(/^[0-9a-f]{64}$/);
     expect(((await (await call("/api/pack", { headers: auth() })).json()) as { report: { fresh: boolean } }).report.fresh).toBe(true);
     expect((await readFile(join(pack, "deck.docx"))).length).toBeGreaterThan(0);
+  });
+
+  test("checks the pack against the heads of a room: stale until the refresh an agent proposed is approved, then fresh", async () => {
+    // A room whose engine applies a batch the way a local refresh does.
+    await room.close();
+    room = new RoomServer({ dbPath: join(dir, "pack-rooms.sqlite"), blobDir: join(dir, "pack-blobs"), engine: new LocalEngine() });
+    const pack = join(dir, "pack");
+    await mkdir(pack);
+    const bindings = [
+      binding({ id: "headline", target_kind: "docx_bookmark", target_address: "Headline", selector: { type: "defined_name", name: "Headline" } }),
+      binding({ id: "table", target_kind: "docx_table", target_address: "Revenue", selector: { type: "range", sheet: "Fin", ref: "A1:B4" }, fit_policy: "grow" }),
+    ];
+    await writeFile(join(pack, "pack.wolf.json"), manifestBytes(manifest(bindings)));
+    await writeFile(join(pack, "fin.xlsx"), xlsx({ rows: QUARTERS, names: { Headline: "Fin!$B$2" } }));
+    await writeFile(join(pack, "deck.docx"), docx());
+    await start({ pack: { dir: pack } });
+    expect((await postJson("/api/rooms", { room_id: "r1", workspace_id: "ws" })).status).toBe(201);
+    // The room's workbook says Q1 revenue is 5,000,000; the pack directory's says 1,234,567.
+    const rows = [QUARTERS[0] ?? [], ["Q1", { v: 5000000, s: STYLE.currency }, { v: 0.5, s: STYLE.percent }], ...QUARTERS.slice(2)];
+    const workbook = new Uint8Array(xlsx({ rows, names: { Headline: "Fin!$B$2" } }));
+    expect((await call("/api/rooms/r1/docs?name=fin.xlsx", { method: "POST", headers: auth(), body: workbook })).status).toBe(201);
+    expect((await call("/api/rooms/r1/docs?name=deck.docx", { method: "POST", headers: auth(), body: new Uint8Array(docx()) })).status).toBe(201);
+
+    type Checked = { dir: string; room: string | null; report: { fresh: boolean; bindings: { binding_id: string; status: string }[] } };
+    const check = async (query = "?room=r1"): Promise<Checked> => {
+      const response = await call(`/api/pack${query}`, { headers: auth() });
+      expect(response.status).toBe(200);
+      return (await response.json()) as Checked;
+    };
+    const statuses = (checked: Checked) => checked.report.bindings.map((b) => [b.binding_id, b.status]);
+
+    const before = await check();
+    expect(before).toMatchObject({ dir: "pack", room: "r1", report: { fresh: false } });
+    expect(statuses(before)).toEqual([
+      ["headline", "stale"],
+      ["table", "stale"],
+    ]);
+    // The only room needs no name.
+    expect((await check("")).room).toBe("r1");
+
+    // The agent proposes the refresh; until a person approves it, nothing in the room has changed.
+    const mcp = (body: unknown, headers: Record<string, string>) =>
+      fetch(`${server.mcpUrl}?room=r1`, { method: "POST", headers: { "content-type": "application/json", accept: "application/json, text/event-stream", ...headers }, body: JSON.stringify(body) });
+    const opened = await mcp({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "test", version: "1" } } }, auth("t-robot"));
+    expect(opened.status).toBe(200);
+    const session = { ...auth("t-robot"), "mcp-session-id": opened.headers.get("mcp-session-id") ?? "" };
+    const proposed = (await (await mcp({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "pack_link_refresh", arguments: { pack: "quarterly" } } }, session)).json()) as {
+      result: { structuredContent: { mode: string; updated: number; bindings: { proposal_id?: string }[] } };
+    };
+    expect(proposed.result.structuredContent).toMatchObject({ mode: "propose", updated: 2 });
+    const proposalId = proposed.result.structuredContent.bindings[0]?.proposal_id ?? "";
+    expect(statuses(await check())).toEqual([
+      ["headline", "stale"],
+      ["table", "stale"],
+    ]);
+
+    // Approved and committed: the same server, unrestarted, says every binding is fresh.
+    expect((await room.decideProposal("r1", ALICE, { proposal_id: proposalId, decision: "approve" })).ok).toBe(true);
+    const head = await room.readHead("r1", ALICE, "deck.docx");
+    if (!head.ok) throw new Error(head.error.message);
+    expect(head.value.head.revision).toBe(1);
+    expect(partText(head.value.bytes, "word/document.xml")).toContain("5,000,000");
+    const after = await check();
+    expect(after).toMatchObject({ room: "r1", report: { fresh: true } });
+    expect(after.report.bindings.filter((b) => b.status === "stale")).toEqual([]);
+    // The files on disk were never refreshed: checked there, the pack is still stale.
+    expect((await checkPack(new DirectoryStore(pack))).fresh).toBe(false);
+
+    // A room that does not exist, or an id that is none, is named as such.
+    expect((await call("/api/pack?room=nope", { headers: auth() })).status).toBe(404);
+    expect((await call("/api/pack?room=%2Fx", { headers: auth() })).status).toBe(400);
   });
 });
 
@@ -486,6 +564,10 @@ describe("the MCP endpoint", () => {
     await seedRoom();
     const opened = await mcpPost(initialize, auth("t-robot"), "?room=r1");
     expect(opened.status).toBe(200);
+    // serverInfo names the build: the version of @wolfsdk/workspace, not the MCP server default of 0.0.0.
+    const initialized = (await opened.json()) as { result: { serverInfo: { name: string; version: string } } };
+    expect(workspacePackage.version).not.toBe("0.0.0");
+    expect(initialized.result.serverInfo).toEqual({ name: "wolf-workspace", version: workspacePackage.version });
     const session = opened.headers.get("mcp-session-id")!;
     expect(session).toMatch(/^[0-9a-f-]{36}$/);
     const headers = { ...auth("t-robot"), "mcp-session-id": session };
@@ -554,5 +636,201 @@ describe("the local engine channel", () => {
     expect((await call("/wasm/v1.2.3/fonts/wolf_web_font_pack.json")).headers.get("content-type")).toBe("application/json");
     expect((await call("/wasm/%2e%2e/secret.txt")).status).toBe(404);
     expect((await call("/wasm/latest.txt", { method: "OPTIONS" })).status).toBe(204);
+  });
+});
+
+describe("the read-only mark of the plan record", () => {
+  const PAY = "https://cloud.example.test/billing/acme";
+  const SINCE = "2026-11-28T09:30:00Z";
+  const WORDS: Record<PlanReadOnlyReason, string> = {
+    "trial-ended": "The trial ended on 2026-11-28.",
+    "payment-failed": "A payment for the plan failed on 2026-11-28.",
+    "plan-cancelled": "The plan was cancelled and ended on 2026-11-28.",
+    chargeback: "The card issuer reversed a payment for the plan (a chargeback) on 2026-11-28.",
+  };
+  const UPGRADE = `To keep editing, pay at ${PAY}.`;
+  const refusalOf = (reason: PlanReadOnlyReason) => ({ code: "LICENSE_LIMIT" as const, message: `workspace-read-only: ${WORDS[reason]} ${UPGRADE}` });
+  const markOf = (reason: PlanReadOnlyReason): PlanReadOnly => ({ reason, since: SINCE, payUrl: PAY });
+  /** The customer's plan record as the control plane holds it now: no mark is a read-write workspace. */
+  let mark: PlanReadOnly | null = null;
+  const planReadOnly = (): PlanReadOnly | null => mark;
+  /** One call of each write tool: the refusal comes before the document, thread or pack is looked up. */
+  const WRITE_TOOLS: [string, Record<string, unknown>][] = [
+    ["doc_create", { name: "plan.docx", format: "docx" }],
+    ["doc_edit", { doc: "brief.docx", base_revision: 0, mode: "commit", ops: [{ op: "append_paragraph", text: "No." }] }],
+    ["comment_reply", { thread_id: "ghost", body: "No." }],
+    ["pack_link_refresh", { pack: "ghost" }],
+  ];
+  const append = (text: string) => ({ ops: [{ op: "append_paragraph", text }] });
+  /** The type and the fields of an event of either protocol of the socket. */
+  const wire = (event: RoomServerEvent) => event as unknown as { type: string; task_id?: string; request_id?: string | null };
+
+  type ToolAnswer = { isError?: boolean; structuredContent: Record<string, unknown> };
+
+  /** An MCP session of the robot in room `r1`, and a function that calls one tool in it. */
+  async function mcpSession(): Promise<(name: string, args: Record<string, unknown>) => Promise<ToolAnswer>> {
+    const post = (body: unknown, headers: Record<string, string>) =>
+      fetch(`${server.mcpUrl}?room=r1`, { method: "POST", headers: { "content-type": "application/json", accept: "application/json, text/event-stream", ...headers }, body: JSON.stringify(body) });
+    const opened = await post({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "test", version: "1" } } }, auth("t-robot"));
+    expect(opened.status).toBe(200);
+    const headers = { ...auth("t-robot"), "mcp-session-id": opened.headers.get("mcp-session-id")! };
+    expect((await post({ jsonrpc: "2.0", method: "notifications/initialized" }, headers)).status).toBe(202);
+    let id = 1;
+    return async (name, args) => ((await (await post({ jsonrpc: "2.0", id: ++id, method: "tools/call", params: { name, arguments: args } }, headers)).json()) as { result: ToolAnswer }).result;
+  }
+
+  /** Signing in, reading, searching, downloading and exporting, for the user and for the agent. */
+  async function expectReadable(tool: (name: string, args: Record<string, unknown>) => Promise<ToolAnswer>): Promise<void> {
+    for (const [token, actor] of [["t-alice", ALICE], ["t-robot", ROBOT]] as const) {
+      expect(((await (await call("/api/me", { headers: auth(token) })).json()) as { actor: RoomActor }).actor).toEqual(actor);
+      const state = (await (await call("/api/rooms/r1", { headers: auth(token) })).json()) as { documents: { head: { name: string; revision: number } }[] };
+      expect(state.documents.map((d) => [d.head.name, d.head.revision])).toEqual([["brief.docx", 0]]);
+      const download = await call("/api/rooms/r1/docs/brief.docx/head", { headers: auth(token) });
+      expect(download.status).toBe(200);
+      expect((await download.arrayBuffer()).byteLength).toBeGreaterThan(0);
+      const exported = await call("/api/export", { headers: auth(token) });
+      expect(exported.status).toBe(200);
+      expect(exported.headers.get("content-type")).toBe("application/zip");
+      expect((await exported.arrayBuffer()).byteLength).toBeGreaterThan(0);
+    }
+    const read = await tool("doc_read", { doc: "brief.docx", view: "text" });
+    expect(read.isError).toBeUndefined();
+    expect(JSON.stringify(read.structuredContent)).toContain("Revenue grew in Q3.");
+    const found = await tool("doc_search", { query: "Revenue" });
+    expect(found.isError).toBeUndefined();
+    expect(JSON.stringify(found.structuredContent)).toContain("Revenue grew in Q3.");
+  }
+
+  test("words each reason with its day and the page to pay on, and refuses a mark that is not one", () => {
+    expect(PLAN_READ_ONLY_REASONS).toEqual(["trial-ended", "payment-failed", "plan-cancelled", "chargeback"]);
+    for (const reason of PLAN_READ_ONLY_REASONS) expect(planReadOnlyMode(markOf(reason))).toEqual({ reason: WORDS[reason], upgrade: UPGRADE });
+    // The day is the day of the instant in UTC.
+    expect(planReadOnlyMode({ ...markOf("trial-ended"), since: "2026-11-28T23:30:00-08:00" }).reason).toBe("The trial ended on 2026-11-29.");
+    for (const bad of [
+      { ...markOf("trial-ended"), reason: "storage-limit" as PlanReadOnlyReason },
+      { ...markOf("trial-ended"), since: "soon" },
+      { ...markOf("trial-ended"), payUrl: "/billing" },
+      { ...markOf("trial-ended"), payUrl: "javascript:alert(1)" },
+      { ...markOf("trial-ended"), payUrl: `https://cloud.example.test/${"x".repeat(300)}` },
+    ]) {
+      expect(() => planReadOnlyMode(bad)).toThrow(TypeError);
+    }
+  });
+
+  test("refuses the four write paths, for a user and for an agent, with each reason on the record, and serves them again once paid without a restart", async () => {
+    mark = null;
+    await start({ planReadOnly });
+    await seedRoom();
+    const alice = await connect("t-alice");
+    const robot = await connect("t-robot");
+    for (const socket of [alice, robot]) {
+      socket.send({ type: "room.join", request_id: "join", room_id: "r1", since_seq: null });
+      await socket.next((e) => e.type === "room.snapshot");
+    }
+    // Opened while the workspace was read-write: the session lives through every change of the record.
+    const tool = await mcpSession();
+
+    for (const reason of PLAN_READ_ONLY_REASONS) {
+      mark = markOf(reason);
+      const refusal = refusalOf(reason);
+      for (const token of ["t-alice", "t-robot"]) {
+        // Creating a room.
+        const created = await postJson("/api/rooms", { room_id: `r-${reason}`, workspace_id: "ws" }, token);
+        expect(created.status).toBe(402);
+        expect(await created.json()).toEqual({ error: refusal });
+        // Adding a document.
+        const added = await call(`/api/rooms/r1/docs?name=${reason}.docx`, { method: "POST", headers: auth(token), body: word(["No."]) });
+        expect(added.status).toBe(402);
+        expect(await added.json()).toEqual({ error: refusal });
+      }
+      // Messages on a room's socket.
+      for (const [who, socket] of [["alice", alice], ["robot", robot]] as const) {
+        const requestId = `${who}-${reason}`;
+        socket.send({ type: "doc.edit", request_id: requestId, doc_name: "brief.docx", base_revision: 0, mode: "commit", batch: append("No.") });
+        expect(await socket.next((e) => e.type === "error" && e.request_id === requestId)).toEqual({ type: "error", request_id: requestId, ...refusal });
+      }
+      // An agent's tools over MCP.
+      for (const [name, args] of WRITE_TOOLS) {
+        const answer = await tool(name, args);
+        expect(answer.isError).toBe(true);
+        expect(answer.structuredContent.error).toEqual(refusal);
+      }
+      // The client is told why and where to pay; everything that does not write keeps working.
+      expect(await (await call("/api/me", { headers: auth() })).json()).toEqual({ actor: ALICE, guest: null, readOnly: { reason: WORDS[reason], upgrade: UPGRADE } });
+      await expectReadable(tool);
+    }
+    const rooms = (await (await call("/api/rooms", { headers: auth() })).json()) as { rooms: { room_id: string }[] };
+    expect(rooms.rooms.map((r) => r.room_id)).toEqual(["r1"]);
+    expect(alice.events.some((e) => e.type === "doc.committed" || e.type === "doc.added" || e.type === "proposal.updated")).toBe(false);
+
+    // The customer pays: the record loses its mark, and the same server, sockets and session write again.
+    mark = null;
+    expect(await (await call("/api/me", { headers: auth() })).json()).toEqual({ actor: ALICE, guest: null });
+    expect((await postJson("/api/rooms", { room_id: "r2", workspace_id: "ws" })).status).toBe(201);
+    expect((await call("/api/rooms/r1/docs?name=second.docx", { method: "POST", headers: auth("t-robot"), body: word(["two"]) })).status).toBe(201);
+    alice.send({ type: "doc.edit", request_id: "paid", doc_name: "brief.docx", base_revision: 0, mode: "commit", batch: append("Paid.") });
+    expect(await alice.next((e) => e.type === "doc.committed")).toMatchObject({ entry: { author: ALICE } });
+    const proposed = await tool("doc_edit", { doc: "brief.docx", base_revision: 1, mode: "propose", ops: [{ op: "append_paragraph", text: "From the agent." }] });
+    expect(proposed.isError).toBeUndefined();
+    expect(proposed.structuredContent.mode).toBe("propose");
+    for (const socket of [alice, robot]) socket.ws.close();
+  });
+
+  test("refuses the write tools the assistant calls for a user, with each reason, and lets it write once paid", async () => {
+    type Reply = { text?: string; tools?: { name: string; arguments: unknown }[] };
+    type Sent = { messages: { role: string; content: unknown }[] };
+    const sent: Sent[] = [];
+    const edit = { name: "doc_edit", arguments: { doc: "brief.docx", base_revision: 0, mode: "commit", ops: [{ op: "append_paragraph", text: "Outlook: steady." }] } };
+    const script: Reply[] = [...PLAN_READ_ONLY_REASONS.flatMap((): Reply[] => [{ tools: [edit] }, { text: "The workspace is read-only." }]), { tools: [edit] }, { text: "Proposed." }];
+    // A model that answers from the script, as an OpenAI-compatible stream, and keeps what it was sent.
+    const scripted = async (_url: unknown, init?: RequestInit): Promise<Response> => {
+      const n = sent.length;
+      sent.push(JSON.parse(String(init?.body)) as Sent);
+      const reply = script[n];
+      if (reply === undefined) throw new Error(`the script has no answer for model call ${n + 1}`);
+      const chunks: unknown[] = [];
+      if (reply.text) chunks.push({ choices: [{ delta: { content: reply.text } }] });
+      (reply.tools ?? []).forEach((t, index) => {
+        chunks.push({ choices: [{ delta: { tool_calls: [{ index, id: `call_${n}_${index}`, type: "function", function: { name: t.name, arguments: JSON.stringify(t.arguments) } }] } }] });
+      });
+      chunks.push({ choices: [{ delta: {}, finish_reason: reply.tools?.length ? "tool_calls" : "stop" }] });
+      chunks.push({ choices: [], usage: { prompt_tokens: 100, completion_tokens: 10 } });
+      return new Response([...chunks.map((chunk) => `data: ${JSON.stringify(chunk)}\n\n`), "data: [DONE]\n\n"].join(""), { headers: { "content-type": "text/event-stream" } });
+    };
+    /** What the tool answered in the task of model call `n`, as the model was given it. */
+    const toolAnswer = (n: number): string => String(sent[n]?.messages.find((m) => m.role === "tool")?.content);
+
+    // As `serve` composes it: the agent of the assistant acts on the seat of the user it works for.
+    await room.close();
+    room = new RoomServer({ dbPath: join(dir, "rooms.sqlite"), blobDir: join(dir, "blobs"), engine: new MemoryEngine(), operatorOf: (agent) => server?.assistant.operatorOf(agent) ?? null });
+    mark = null;
+    await start({
+      planReadOnly,
+      assistant: { endpoint: { url: "https://model.invalid/v1/chat/completions", model: "open-model-1", key: "placeholder" }, allowance: null, storePath: join(dir, "assistant.sqlite"), fetch: scripted as typeof fetch },
+    });
+    await seedRoom();
+    const alice = await connect();
+    alice.send({ type: "room.join", request_id: "join", room_id: "r1", since_seq: null });
+    await alice.next((e) => e.type === "room.snapshot");
+    const finished = new Set<string>();
+    const ask = async (requestId: string): Promise<void> => {
+      alice.send({ type: "assistant.ask", request_id: requestId, conversation_id: null, text: "Add a closing line", doc_name: "brief.docx", target_address: null });
+      const done = wire(await alice.next((e) => wire(e).type === "assistant.task.finished" && !finished.has(wire(e).task_id ?? "")));
+      finished.add(done.task_id ?? "");
+    };
+
+    for (const [i, reason] of PLAN_READ_ONLY_REASONS.entries()) {
+      mark = markOf(reason);
+      await ask(`a-${reason}`);
+      expect(toolAnswer(2 * i + 1)).toContain(refusalOf(reason).message);
+    }
+    expect(alice.events.some((e) => e.type === "doc.committed" || e.type === "proposal.updated")).toBe(false);
+
+    mark = null;
+    await ask("a-paid");
+    const answer = JSON.parse(toolAnswer(2 * PLAN_READ_ONLY_REASONS.length + 1)) as { error?: unknown; mode?: string };
+    expect(answer.error).toBeUndefined();
+    expect(answer.mode).toBe("propose");
+    alice.ws.close();
   });
 });

@@ -1,6 +1,15 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { join } from "node:path";
-import type { RoomClientMessage, RoomHead, RoomServerEvent, RoomSessionEntry, RoomState, RoomThread } from "@wolfsdk/protocol/workspace";
+import type {
+  AssistantClientMessage,
+  AssistantServerEvent,
+  RoomClientMessage,
+  RoomHead,
+  RoomServerEvent,
+  RoomSessionEntry,
+  RoomState,
+  RoomThread,
+} from "@wolfsdk/protocol/workspace";
 import type { Ctx2D } from "../src/vector/render.ts";
 import { parseDisplayList } from "../src/vector/abi.ts";
 import {
@@ -41,7 +50,7 @@ function room(over: Partial<RoomState> = {}): RoomState {
 }
 
 class FakeSocket implements SocketLike {
-  sent: RoomClientMessage[] = [];
+  sent: (RoomClientMessage | AssistantClientMessage)[] = [];
   closed = false;
   onopen: ((event: unknown) => void) | null = null;
   onmessage: ((event: { data: unknown }) => void) | null = null;
@@ -55,7 +64,7 @@ class FakeSocket implements SocketLike {
   }
 
   send(data: string): void {
-    this.sent.push(JSON.parse(data) as RoomClientMessage);
+    this.sent.push(JSON.parse(data) as RoomClientMessage | AssistantClientMessage);
   }
   close(): void {
     this.closed = true;
@@ -63,7 +72,7 @@ class FakeSocket implements SocketLike {
   open(): void {
     this.onopen?.({});
   }
-  deliver(event: RoomServerEvent): void {
+  deliver(event: RoomServerEvent | AssistantServerEvent): void {
     this.onmessage?.({ data: JSON.stringify(event) });
   }
   drop(): void {
@@ -74,6 +83,7 @@ class FakeSocket implements SocketLike {
 function harness(sinceSeq: number | null = null) {
   const sockets: FakeSocket[] = [];
   const events: RoomServerEvent[] = [];
+  const assistant: unknown[] = [];
   const statuses: ConnectionStatus[] = [];
   const timers: { fn: () => void; ms: number; cancelled: boolean }[] = [];
   const client = new RoomClient({
@@ -81,6 +91,7 @@ function harness(sinceSeq: number | null = null) {
     roomId: "q3-close",
     sinceSeq,
     onEvent: (event) => events.push(event),
+    onAssistant: (event) => assistant.push(event),
     onStatus: (status) => statuses.push(status),
     createSocket: (url) => {
       const socket = new FakeSocket(url);
@@ -95,7 +106,7 @@ function harness(sinceSeq: number | null = null) {
       };
     },
   });
-  return { client, sockets, events, statuses, timers };
+  return { client, sockets, events, assistant, statuses, timers };
 }
 
 describe("RoomClient", () => {
@@ -340,12 +351,104 @@ describe("RoomClient", () => {
     expect(client.lastSeq).toBe(8);
     expect(statuses).toContain("reconnecting");
   });
+
+  test("an assistant message goes to onAssistant alone: no room event, no settled request, no seq, no status", async () => {
+    const { client, sockets, events, assistant, statuses } = harness();
+    client.connect();
+    sockets[0]!.open();
+    sockets[0]!.deliver({ type: "room.snapshot", seq: 5, room: room({ seq: 5 }) });
+    let settled = false;
+    const pending = client.request({ type: "proposal.decide", proposal_id: "p1", decision: "approve" }, () => true);
+    void pending.then(
+      () => (settled = true),
+      () => (settled = true),
+    );
+    const requestId = sockets[0]!.sent.at(-1)!.request_id;
+    const status: AssistantServerEvent = {
+      type: "assistant.status",
+      request_id: requestId,
+      state: "ready",
+      model: "deepseek-v4.1-flash",
+      allowance: { period: "2026-11", limit: 300, used: 12, resets_at: "2026-12-01T00:00:00Z" },
+    };
+    // An assistant refusal that happens to carry the room request's id must not reject it either.
+    const refusal: AssistantServerEvent = { type: "assistant.error", request_id: requestId, code: "BUSY", message: "a task is already running" };
+    sockets[0]!.deliver(status);
+    sockets[0]!.deliver(refusal);
+    await Promise.resolve();
+    expect(assistant).toEqual([status, refusal]);
+    expect(events.map((e) => e.type)).toEqual(["room.snapshot"]);
+    expect(settled).toBe(false);
+    expect(client.lastSeq).toBe(5);
+    expect(client.status).toBe("live");
+    expect(statuses).toEqual(["connecting", "live"]);
+
+    // The room's own answer still settles the request.
+    const answer: RoomServerEvent = { type: "doc.added", seq: 6, document: { head: head("deck.pptx") } };
+    sockets[0]!.deliver(answer);
+    expect(await pending).toEqual(answer);
+  });
+
+  test("without onAssistant an assistant message is dropped, not handed to onEvent", () => {
+    const sockets: FakeSocket[] = [];
+    const events: RoomServerEvent[] = [];
+    const client = new RoomClient({
+      url: "ws://127.0.0.1:8787/ws?token=t",
+      roomId: "q3-close",
+      onEvent: (event) => events.push(event),
+      createSocket: (url) => {
+        const socket = new FakeSocket(url);
+        sockets.push(socket);
+        return socket;
+      },
+    });
+    client.connect();
+    sockets[0]!.open();
+    sockets[0]!.deliver({ type: "assistant.text", task_id: "task-1", delta: "Hello" });
+    expect(events).toEqual([]);
+    expect(client.lastSeq).toBeNull();
+  });
+
+  test("sendAssistant writes the message with the caller's request_id, only while the room is live", () => {
+    const { client, sockets, timers } = harness();
+    const ask: AssistantClientMessage = {
+      type: "assistant.ask",
+      request_id: "assistant-7",
+      conversation_id: null,
+      text: "Tighten the summary",
+      doc_name: "memo.docx",
+      target_address: "/body/p[2]",
+    };
+    expect(client.sendAssistant(ask)).toBe(false);
+    client.connect();
+    expect(client.sendAssistant(ask)).toBe(false);
+    expect(sockets[0]!.sent).toEqual([]);
+
+    sockets[0]!.open();
+    expect(client.sendAssistant(ask)).toBe(true);
+    expect(sockets[0]!.sent).toEqual([{ type: "room.join", request_id: "ui-1", room_id: "q3-close", since_seq: null }, ask]);
+    // The room's own request ids are untouched: the next request is still ui-2.
+    void client.request({ type: "proposal.decide", proposal_id: "p1", decision: "approve" }, () => false).catch(() => undefined);
+    expect(sockets[0]!.sent.at(-1)).toMatchObject({ type: "proposal.decide", request_id: "ui-2" });
+
+    sockets[0]!.drop();
+    expect(client.sendAssistant({ type: "assistant.status", request_id: "assistant-8" })).toBe(false);
+    timers[0]!.fn();
+    sockets[1]!.open();
+    expect(client.sendAssistant({ type: "assistant.status", request_id: "assistant-8" })).toBe(true);
+    expect(sockets[1]!.sent.at(-1)).toEqual({ type: "assistant.status", request_id: "assistant-8" });
+  });
 });
 
 describe("roomSocketUrl", () => {
   test("uses ws for http and wss for https, with the token as a query parameter", () => {
     expect(roomSocketUrl("http://127.0.0.1:8787", "tok en")).toBe("ws://127.0.0.1:8787/ws?token=tok+en");
     expect(roomSocketUrl("https://workspace.example.com", "t")).toBe("wss://workspace.example.com/ws?token=t");
+  });
+
+  test("has no token parameter when the token is null, for a hosting front that authenticates the upgrade", () => {
+    expect(roomSocketUrl("https://acme.cloud.example.com", null)).toBe("wss://acme.cloud.example.com/ws");
+    expect(new URL(roomSocketUrl("http://127.0.0.1:8787", null)).searchParams.has("token")).toBe(false);
   });
 });
 

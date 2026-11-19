@@ -1,13 +1,21 @@
 /**
  * The logic of the review-mode sheet grid (`SheetReviewView.tsx`), free of the DOM and the kernel
  * so it can be tested on its own: which cells the reviewed change sets touched and what the
- * reviewer decided on them, how much of a sheet to read, and how a `sheet_viewport` reply
- * becomes boxes.
+ * reviewer decided on them, how much of a sheet to read, how a `sheet_viewport` reply becomes
+ * boxes, and where each changed cell's outline and change-type tag go.
  *
  * It keeps its own small A1 helpers instead of importing the sheets plugin's: a module the
  * review entry reaches is part of the entry, and the authoring plugin must stay a lazy chunk.
  */
-import { changesOf, type Decision, type Hunk, type SheetViewport } from "@wolfsdk/protocol";
+import {
+  changesOf,
+  placeTags,
+  type Change,
+  type Decision,
+  type Hunk,
+  type Rect as PageRect,
+  type SheetViewport,
+} from "@wolfsdk/protocol";
 import type { HistoryEntry } from "../host/index.ts";
 
 /** What the main area of a workbook shows: the sheet grid or the engine's printed pages. */
@@ -65,10 +73,15 @@ export type ReviewReads = {
   hunkDecisionOf(entry: HistoryEntry, op: number | null): Decision;
 };
 
+/** What a change record did to its node, as the changes panel and the page outlines name it. */
+export type ChangeType = Change["change"];
+
 /** A cell some change record touched. `entry` and `index` name its latest record (`selectChange` takes them). */
 export type ChangedCell = CellAddress & {
   /** `reject` if any hunk touching the cell is rejected, else `pending` if any is undecided, else `approve`. */
   decision: Decision;
+  /** What its records did to the cell, earliest first (`mergeChange`): its outline's tag. */
+  change: ChangeType;
   entry: HistoryEntry;
   index: number;
   /** Change records on the cell across all change sets. */
@@ -83,6 +96,17 @@ export function mergeDecision(a: Decision, b: Decision): Decision {
 }
 
 /**
+ * What two records did to one cell, `earlier` first: a cell added and then modified is still
+ * added, one removed and then added back is modified, and a removal is the last word.
+ */
+export function mergeChange(earlier: ChangeType, later: ChangeType): ChangeType {
+  if (later === "removed") return "removed";
+  if (earlier === "removed" && later === "added") return "modified";
+  if (earlier === "added") return "added";
+  return later;
+}
+
+/**
  * Every cell the history's change records touch, by `cellKey`, each with the combined decision of
  * the hunks that changed it. Changes to anything but a cell (sheets, rows, columns, ranges) are
  * left to the changes panel.
@@ -94,13 +118,15 @@ export function changedCells(reads: ReviewReads): Map<string, ChangedCell> {
     for (const hunk of reads.hunks(entry)) {
       const decision = reads.hunkDecisionOf(entry, hunk.op);
       for (const index of hunk.changeIndices) {
-        const parsed = parseCellAddress(changes[index]?.address ?? "");
-        if (!parsed) continue;
+        const record = changes[index];
+        const parsed = parseCellAddress(record?.address ?? "");
+        if (!record || !parsed) continue;
         const key = cellKey(parsed.sheetId, parsed.a1);
         const before = cells.get(key);
         cells.set(key, {
           ...parsed,
           decision: before ? mergeDecision(before.decision, decision) : decision,
+          change: before ? mergeChange(before.change, record.change) : record.change,
           entry,
           index,
           records: (before?.records ?? 0) + 1,
@@ -372,4 +398,91 @@ export function cellBoxes(
   for (const cell of reply.cells) add(cell.a1, cell.row, cell.col, cell);
   for (const cell of extra) add(cell.a1, cell.row, cell.col, null);
   return boxes;
+}
+
+/** Rendered size of a change-type tag (11px text and its padding), as the page outlines estimate it before measuring. */
+export const tagSize = (text: string): [number, number] => [text.length * 7 + 8, 14];
+
+/** The `cellKey` of the cell a selected change record names (`ReviewStore.ui.selectedChange`); null when it names none. */
+export function selectedCellKey(
+  history: readonly HistoryEntry[],
+  selected: { revision: number; index: number } | null,
+): string | null {
+  const entry = selected ? history.find((e) => e.revision === selected.revision) : undefined;
+  const cell = entry && selected ? parseCellAddress(changesOf(entry)[selected.index]?.address ?? "") : null;
+  return cell ? cellKey(cell.sheetId, cell.a1) : null;
+}
+
+/** One changed cell's outline in the grid, as a changed paragraph's on a page (review/overlay.tsx `ChangeOutlines`). */
+export type CellOutline = {
+  key: string;
+  a1: string;
+  /** The cell's drawn box (a merge's whole box), in grid pixels with the headers excluded. */
+  box: Rect;
+  /** The change type its tag names. */
+  change: ChangeType;
+  decision: Decision;
+  /** Its cell is the one the change selected in the changes panel names. */
+  selected: boolean;
+  /** Where its tag goes, in grid pixels. `free: false`: it would cover another cell's content, so it shows only on demand. */
+  tag: Rect & { free: boolean };
+};
+
+const tuple = (r: Rect): PageRect => [r.x, r.y, r.w, r.h];
+
+function near(a: Rect, b: Rect, margin: [number, number]): boolean {
+  return (
+    a.x < b.x + b.w + margin[0] && b.x - margin[0] < a.x + a.w && a.y < b.y + b.h + margin[1] && b.y - margin[1] < a.y + a.h
+  );
+}
+
+/**
+ * The outline of each changed cell of sheet `sheetId` among the drawn `boxes`, in reading order:
+ * its box, its change type and decision, and whether `selectedKey` names it. The tags are placed
+ * as on a page (`placeTags`) inside a grid of `size` pixels, the other drawn cells being the
+ * content a tag should not cover.
+ */
+export function cellOutlines(
+  boxes: readonly CellBox[],
+  changed: ReadonlyMap<string, ChangedCell>,
+  sheetId: number,
+  selectedKey: string | null,
+  size: [number, number],
+): CellOutline[] {
+  const hits = boxes
+    .map((box) => ({ box, key: cellKey(sheetId, box.a1) }))
+    .flatMap(({ box, key }) => {
+      const cell = changed.get(key);
+      return cell ? [{ box, key, cell }] : [];
+    })
+    .sort((a, b) => a.box.y - b.box.y || a.box.x - b.box.x);
+  if (hits.length === 0) return [];
+  // Only the cells a tag could reach are obstacles: a sheet may draw thousands.
+  const reach = hits.reduce<[number, number]>(
+    (m, { cell }) => {
+      const [w, h] = tagSize(cell.change);
+      return [Math.max(m[0], w), Math.max(m[1], h)];
+    },
+    [0, 0],
+  );
+  const content = boxes
+    .filter((b) => (b.text !== "" || changed.has(cellKey(sheetId, b.a1))) && hits.some((h) => near(b, h.box, reach)))
+    .map(tuple);
+  const tags = placeTags(
+    hits.map(({ box, cell }) => ({ box: tuple(box), text: cell.change, size: tagSize(cell.change) })),
+    content,
+    size,
+  );
+  return hits.map(({ box, key, cell }, i) => {
+    const { rect, free } = tags[i]!;
+    return {
+      key,
+      a1: box.a1,
+      box: { x: box.x, y: box.y, w: box.w, h: box.h },
+      change: cell.change,
+      decision: cell.decision,
+      selected: key === selectedKey,
+      tag: { x: rect[0], y: rect[1], w: rect[2], h: rect[3], free },
+    };
+  });
 }

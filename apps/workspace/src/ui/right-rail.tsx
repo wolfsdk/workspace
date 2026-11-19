@@ -37,6 +37,9 @@ export type RightRailProps = {
   activity: ActivityItem[];
   /** A shared-link snapshot: there is no engine to open a diff in, so proposals offer no Inspect Diff. */
   shareMode?: boolean;
+  /** A guest: proposals show with no Approve, Reject or preview download, since a guest decides nothing and exports
+   * nothing. */
+  guest?: boolean;
 };
 
 const TABS: { id: RightTab; label: string }[] = [
@@ -102,7 +105,7 @@ const STATUS_LABEL: Record<RoomProposal["status"], string> = {
   conflicted: "Conflicted",
 };
 
-function Proposals({ proposals, history, actor, allDocs, shareMode, focusedProposal, deciding, onInspect, onDecide, onDownloadPreview }: RightRailProps) {
+function Proposals({ proposals, history, actor, allDocs, shareMode, guest, focusedProposal, deciding, onInspect, onDecide, onDownloadPreview }: RightRailProps) {
   if (proposals.length === 0) {
     return (
       <EmptyState title="No proposals">
@@ -113,7 +116,11 @@ function Proposals({ proposals, history, actor, allDocs, shareMode, focusedPropo
   const isAgent = actor.kind === "agent";
   return (
     <ul class="cards">
-      {isAgent ? <li class="notice notice--info">You are signed in as an agent. Only a user can approve or reject a proposal.</li> : null}
+      {guest ? (
+        <li class="notice notice--info">You are a guest here. Your edits go in as proposals, and a member of the workspace approves or rejects them.</li>
+      ) : isAgent ? (
+        <li class="notice notice--info">You are signed in as an agent. Only a user can approve or reject a proposal.</li>
+      ) : null}
       {proposals.map((proposal) => {
         const size = proposalSize(proposal);
         const open = proposal.status === "open";
@@ -151,7 +158,7 @@ function Proposals({ proposals, history, actor, allDocs, shareMode, focusedPropo
                   Inspect Diff
                 </button>
               ) : null}
-              {proposal.preview_sha256 ? (
+              {proposal.preview_sha256 && !guest ? (
                 <button
                   type="button"
                   class="icon-button"
@@ -162,7 +169,7 @@ function Proposals({ proposals, history, actor, allDocs, shareMode, focusedPropo
                   <Icon name="download" size={14} />
                 </button>
               ) : null}
-              {open ? (
+              {open && !guest ? (
                 <span class="card-decide">
                   <button
                     type="button"

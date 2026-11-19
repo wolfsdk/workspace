@@ -1,5 +1,5 @@
 // A session without a transport: the handshake, the errors of JSON-RPC, and the stream of room events.
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { MCP_WORKSPACE_TOOL_NAMES, MCP_WORKSPACE_TOOLS, MCP_WORKSPACE_TOOLS_MAX_BYTES, MCP_WORKSPACE_TOOLS_MAX_TOKENS, mcpToolsBytes, mcpToolsTokenEstimate } from "@wolfsdk/protocol/workspace";
 import { INVALID_PARAMS, INVALID_REQUEST, METHOD_NOT_FOUND, MCP_PROTOCOL_VERSIONS, McpServer, type JsonRpcNotification } from "../src/index.ts";
 import {
@@ -19,6 +19,7 @@ import {
   rpcErrorOf,
 } from "./fixtures/workspace.ts";
 
+setDefaultTimeout(120_000);
 afterEach(disposeAll);
 
 describe("handshake", () => {

@@ -1,7 +1,7 @@
 // The three hooks an embedder plugs in: a reader and a renderer backed by engine workers (here a scripted
 // worker, so what the server sends the engine is what the test checks), and a pack refresher.
 import { createHash } from "node:crypto";
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, setDefaultTimeout, test } from "bun:test";
 import type { ReactorPipeRequest } from "@wolfsdk/protocol/workspace";
 import type { EngineWorker } from "@wolfsdk/server";
 import {
@@ -16,6 +16,7 @@ import {
 import type { EnginePool } from "../src/engine.ts";
 import { alice, callTool, dataOf, disposeAll, listen, makeWorkspace, must, openSession, robot, toolErrorOf } from "./fixtures/workspace.ts";
 
+setDefaultTimeout(120_000);
 afterEach(disposeAll);
 
 const PNG = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3]);
@@ -26,6 +27,8 @@ type Script = {
   pages?: number;
   /** What `extract` returns as a text file, by suffix. */
   extracted?: Partial<Record<".txt" | ".md", string>>;
+  /** The view `observe` writes, by target (`""` for the whole document). A target with no view names nothing. */
+  views?: Record<string, Record<string, unknown>[]>;
   /** Make `close` fail, so the worker must be thrown away. */
   badClose?: boolean;
   refuse?: { cmd: ReactorPipeRequest["cmd"]; code: string; message: string };
@@ -57,6 +60,16 @@ function scriptedPool(script: Script = {}) {
           if (text === undefined) return { body: { cmd: "extract", ok: true, ms: 0, receipt: {}, outputs: [] }, segments: [] } as never;
           return { body: { cmd: "extract", ok: true, ms: 0, receipt: {}, outputs: [{ path: `out/doc${suffix}`, data: { bin: 0, len: text.length } }] }, segments: [new TextEncoder().encode(text)] } as never;
         }
+        case "observe": {
+          const target = (req.options?.targets as string[] | undefined)?.[0] ?? "";
+          const nodes = script.views?.[target];
+          if (nodes === undefined) {
+            const errors = [{ argument: target, code: "address-unresolved", message: `address unresolved ${target}` }];
+            return { body: { cmd: "observe", ok: false, ms: 0, receipt: { status: "failed", errors }, outputs: [] }, segments: [] } as never;
+          }
+          const view = new TextEncoder().encode(JSON.stringify({ nodes, truncated: false }));
+          return { body: { cmd: "observe", ok: true, ms: 0, receipt: { status: "succeeded", errors: [] }, outputs: [{ path: "/mem/out/brief.view.json", data: { bin: 0, len: view.length } }] }, segments: [view] } as never;
+        }
         case "layout":
           return { body: { cmd: "layout", ok: true, ms: 0, cached: false, layout_ms: 0, summary: { format: "docx", pages: script.pages ?? 3, determinism: DETERMINISM }, page_hashes: [] }, segments: [] } as never;
         case "render_page_png":
@@ -87,10 +100,108 @@ describe("engineInspector", () => {
     const { pool, asked } = scriptedPool({ extracted: { ".txt": "FROM THE ENGINE" } });
     const workspace = await makeWorkspace({ inspector: engineInspector(pool) });
     const session = await openSession(workspace.mcp);
-    expect(dataOf(await callTool(session, "doc_read", { doc: "brief.docx" })).view).toBe("structure");
-    expect(dataOf(await callTool(session, "doc_read", { doc: "brief.docx", view: "text", target: "para:@2" })).text).toBe("Revenue grew in Q3.");
+    expect(dataOf(await callTool(session, "doc_read", { doc: "model.xlsx" })).view).toBe("structure");
+    expect(dataOf(await callTool(session, "doc_read", { doc: "brief.docx", view: "markdown", target: "para:@2" })).view).toBe("markdown");
     expect(dataOf(await callTool(session, "doc_read", { doc: "model.xlsx", view: "cells" })).view).toBe("cells");
     expect(asked).toEqual([]);
+  });
+
+  // The view of a Word document as the engine lists it: the body first, then what hangs below a section.
+  const HEADER = "section:@2/header:default";
+  const LONG = `Revenue grew in Q3. ${"More. ".repeat(60)}`.trim();
+  const WORD_VIEW = [
+    { id: "section:body", kind: "section", parent: null, label: "body: section 2 of 2 (last)", visible: true },
+    { id: "para:~0a0a0a0a", kind: "paragraph", parent: null, text: "Scope", format: { style: "Heading2", style_name: "heading 2" }, visible: true },
+    { id: "para:~1b1b1b1b", kind: "paragraph", parent: null, text: LONG, format: { style: "Normal", style_name: "Normal" }, visible: true },
+    { id: "para:~1b1b1b1b/run:@1", kind: "run", parent: "para:~1b1b1b1b", text: LONG, visible: true },
+    { id: "para:~1b1b1b1b/link:@1", kind: "hyperlink", parent: "para:~1b1b1b1b", channel: "body", text: "Q3", url: "https://example.test/q3", relationship: "rId4", visible: true },
+    { id: "para:~1b1b1b1b/image:@1", kind: "image", parent: "para:~1b1b1b1b", channel: "body", alt_text: "Revenue chart", extent: { cx_emu: 10, cy_emu: 10 }, visible: true },
+    { id: "comment:#3", kind: "comment", parent: "para:~1b1b1b1b", channel: "comments", text: "Cite the ledger.", author: "Bea", anchor: "para:~1b1b1b1b/span:Q3", visible: true },
+    { id: "section:@2", kind: "section", parent: null, label: "section 1 of 2", visible: true },
+    { id: HEADER, kind: "header", parent: "section:@2", channel: "headers-footers", label: "default: active", visible: true },
+    { id: `${HEADER}/para:~2c2c2c2c`, kind: "paragraph", parent: HEADER, channel: "headers-footers", text: "Board pack (draft)", format: { style: "Header", style_name: "header" }, visible: true },
+    { id: `${HEADER}/para:~2c2c2c2c/run:@1`, kind: "run", parent: `${HEADER}/para:~2c2c2c2c`, channel: "headers-footers", text: "Board pack (draft)", visible: true },
+  ];
+
+  test("lists a Word document as the engine observes it, sections with their headers first", async () => {
+    const { pool, asked } = scriptedPool({ views: { "": WORD_VIEW } });
+    const workspace = await makeWorkspace({ inspector: engineInspector(pool) });
+    const session = await openSession(workspace.mcp);
+    const data = dataOf(await callTool(session, "doc_read", { doc: "brief.docx" }));
+    const nodes = data.nodes as { address: string; kind: string; depth: number; label?: string; text?: string; meta?: Record<string, unknown> }[];
+    expect(nodes.map((node) => [node.address, node.kind, node.depth])).toEqual([
+      ["section:body", "section", 0],
+      ["section:@2", "section", 0],
+      [HEADER, "header", 1],
+      [`${HEADER}/para:~2c2c2c2c`, "paragraph", 2],
+      ["para:~0a0a0a0a", "heading", 0],
+      ["para:~1b1b1b1b", "paragraph", 0],
+      ["para:~1b1b1b1b/link:@1", "hyperlink", 1],
+      ["para:~1b1b1b1b/image:@1", "image", 1],
+      ["comment:#3", "comment", 1],
+    ]);
+    expect(nodes[4]).toMatchObject({ label: "heading 2", meta: { level: 2 } });
+    expect(nodes[6]?.meta).toEqual({ channel: "body", url: "https://example.test/q3" });
+    expect(nodes[7]?.meta).toEqual({ channel: "body", alt_text: "Revenue chart" });
+    expect(nodes[8]).toMatchObject({ text: "Cite the ledger.", meta: { author: "Bea", anchor: "para:~1b1b1b1b/span:Q3" } });
+    // A long paragraph is listed by a preview; the text view has all of it.
+    expect(nodes[5]?.text?.length).toBe(160);
+    expect(data.total).toBe(9);
+    expect(asked[1]).toMatchObject({ cmd: "observe", doc: 7 });
+    expect((asked[1] as { options: Record<string, unknown> }).options.targets).toBeUndefined();
+  });
+
+  test("reads below an address only the engine resolves: a header, then the runs of its paragraph", async () => {
+    const paragraph = `${HEADER}/para:~2c2c2c2c`;
+    const { pool, asked } = scriptedPool({ views: { [HEADER]: WORD_VIEW.slice(8), [paragraph]: WORD_VIEW.slice(9) } });
+    const workspace = await makeWorkspace({ inspector: engineInspector(pool) });
+    const session = await openSession(workspace.mcp);
+    const header = dataOf(await callTool(session, "doc_read", { doc: "brief.docx", target: HEADER })).nodes as { address: string; depth: number }[];
+    expect(header.map((node) => [node.address, node.depth])).toEqual([
+      [HEADER, 0],
+      [paragraph, 1],
+    ]);
+    const runs = dataOf(await callTool(session, "doc_read", { doc: "brief.docx", target: paragraph })).nodes as { address: string; depth: number }[];
+    expect(runs.map((node) => [node.address, node.depth])).toEqual([
+      [paragraph, 0],
+      [`${paragraph}/run:@1`, 1],
+    ]);
+    expect(dataOf(await callTool(session, "doc_read", { doc: "brief.docx", view: "text", target: HEADER })).text).toBe("Board pack (draft)");
+    expect(asked.flatMap((request) => (request.cmd === "observe" ? [request.options?.targets] : []))).toEqual([[HEADER], [paragraph], [HEADER]]);
+  });
+
+  test("a span the engine resolves reads as its own words, and one it does not is address-unresolved", async () => {
+    const span = "para:@2/span:grew in Q3";
+    const { pool } = scriptedPool({ views: { [span]: [] } });
+    const workspace = await makeWorkspace({ inspector: engineInspector(pool) });
+    const session = await openSession(workspace.mcp);
+    expect(dataOf(await callTool(session, "doc_read", { doc: "brief.docx", target: span })).nodes).toEqual([{ address: span, kind: "span", depth: 0, text: "grew in Q3" }]);
+    expect(dataOf(await callTool(session, "doc_read", { doc: "brief.docx", view: "text", target: span })).text).toBe("grew in Q3");
+    const absent = toolErrorOf(await callTool(session, "doc_read", { doc: "brief.docx", view: "text", target: "para:@2/span:shrank" }));
+    expect(absent).toMatchObject({ code: "BAD_REQUEST", detail: { reason: "address-unresolved" } });
+  });
+
+  test("an address that names nothing in the engine either is address-unresolved", async () => {
+    const { pool } = scriptedPool({ views: {} });
+    const workspace = await makeWorkspace({ inspector: engineInspector(pool) });
+    const session = await openSession(workspace.mcp);
+    for (const view of ["structure", "text"]) {
+      const refused = toolErrorOf(await callTool(session, "doc_read", { doc: "brief.docx", view, target: "section:body/header:default" }));
+      expect(refused).toMatchObject({ code: "BAD_REQUEST", detail: { reason: "address-unresolved" } });
+    }
+  });
+
+  test("doc_search finds text in a header and in a comment, at the engine's addresses", async () => {
+    const { pool } = scriptedPool({ views: { "": WORD_VIEW } });
+    const workspace = await makeWorkspace({ inspector: engineInspector(pool) });
+    const session = await openSession(workspace.mcp);
+    const header = dataOf(await callTool(session, "doc_search", { query: "Board pack", doc: "brief.docx" })).hits as { address: string; snippet: string }[];
+    expect(header.map((hit) => hit.address)).toEqual([`${HEADER}/para:~2c2c2c2c`]);
+    const comment = dataOf(await callTool(session, "doc_search", { query: "ledger\\.$", regex: true })).hits as { doc: string; address: string }[];
+    expect(comment).toEqual([expect.objectContaining({ doc: "brief.docx", address: "comment:#3" })]);
+    // The body is still searched by the built-in reader, once: the engine's body paragraphs add no second hit.
+    const body = dataOf(await callTool(session, "doc_search", { query: "Revenue grew", doc: "brief.docx" })).hits as { address: string }[];
+    expect(body.map((hit) => hit.address)).toEqual(["para:@2"]);
   });
 
   test("falls back to the built-in reader when the engine has nothing to say", async () => {

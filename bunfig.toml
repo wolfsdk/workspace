@@ -1,0 +1,4 @@
+# Settings bun reads when it is run in this directory.
+[test]
+# Runs before every test file; see the file for what it sets.
+preload = ["./scripts/test-setup.ts"]

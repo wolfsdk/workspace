@@ -18,13 +18,15 @@ export type SharedSnapshotStageProps = {
   snapshotPages?: readonly Page[];
   /** Agent activity of the room, newest first: what the presence list shows. */
   activity: readonly ActivityItem[];
+  /** Whether the banner shows who is at work: false on a page with no room socket, which cannot know. Default true. */
+  presence?: boolean;
 };
 
 type Fetched = { doc: string; pages: readonly Page[] };
 
 const message = (e: unknown): string => (e instanceof Error ? e.message : String(e));
 
-export function SharedSnapshotStage({ api, roomId, doc, snapshotPages, activity }: SharedSnapshotStageProps) {
+export function SharedSnapshotStage({ api, roomId, doc, snapshotPages, activity, presence: showPresence = true }: SharedSnapshotStageProps) {
   const host = useRef<HTMLDivElement>(null);
   const [fetched, setFetched] = useState<Fetched | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -85,10 +87,10 @@ export function SharedSnapshotStage({ api, roomId, doc, snapshotPages, activity 
                   {pages.length} {pages.length === 1 ? "page" : "pages"}
                 </span>
               ) : null}
-              <code title={doc.sha256}>sha256 {shortSha(doc.sha256)}</code>
+              {doc.sha256 !== "" ? <code title={doc.sha256}>sha256 {shortSha(doc.sha256)}</code> : null}
             </span>
           </div>
-          {presence.length === 0 ? (
+          {!showPresence ? null : presence.length === 0 ? (
             <span class="hint">No agents at work</span>
           ) : (
             <ul class="presence" aria-label="Agents at work">

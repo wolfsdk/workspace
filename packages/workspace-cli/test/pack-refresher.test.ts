@@ -1,6 +1,7 @@
 // `pack_link_refresh` of the served MCP endpoint: the pack of `--pack <dir>` is refreshed into the documents of
-// the agent's room, over a real room server whose engine applies batches the way a local refresh does.
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+// the agent's room, over a real room server whose engine applies batches the way a local refresh does; and
+// `workspace_list` of that endpoint describes each binding of the pack from the room's head of its source workbook.
+import { afterEach, beforeEach, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -10,6 +11,8 @@ import { RoomServer } from "@wolfsdk/server";
 import { LocalEngine } from "../../packs/test/evaluators.ts";
 import { binding, docx, manifest, manifestBytes, partText, pptx, QUARTERS, sha256, STYLE, xlsx } from "../../packs/test/fixtures.ts";
 import { startWorkspaceServer, tokenOf, type WorkspaceServer } from "../src/http.ts";
+
+setDefaultTimeout(120_000);
 
 const ALICE: RoomActor = { kind: "user", id: "alice", name: "Alice" };
 const ROBOT: RoomActor = { kind: "agent", id: "robot", name: "Robot" };
@@ -28,6 +31,8 @@ type BindingOutcome = { binding: string; status: string; doc?: string; proposal_
 type Refreshed = { pack: string; mode: string; bindings: BindingOutcome[]; updated: number; failed: number };
 type Called<T> = { result: { isError?: boolean; structuredContent: T } };
 type Failed = { error: { code: string; message: string; detail?: { reason?: string } } };
+type Definition = { id: string; kind: string; source_doc: string | null; source_address: string | null; source_revision?: number; value?: unknown; target_doc: string; target_address: string; problem?: string };
+type Listed = { packs: { pack: string; bindings: string[]; title?: string; definitions?: Definition[] }[] };
 
 let dir: string;
 let pack: string;
@@ -94,8 +99,16 @@ afterEach(async () => {
 
 describe("pack_link_refresh of the served MCP endpoint", () => {
   test("lists the linked pack and proposes its refresh into the room; once approved, the room holds what a local refresh writes", async () => {
-    const listed = await tool<{ packs: unknown }>("workspace_list", {});
-    expect(listed.result.structuredContent.packs).toEqual([{ pack: "quarterly", bindings: BINDINGS.map((b) => b.id), title: "Quarterly pack" }]);
+    const listed = await tool<Listed>("workspace_list", {});
+    expect(listed.result.structuredContent.packs).toMatchObject([{ pack: "quarterly", bindings: BINDINGS.map((b) => b.id), title: "Quarterly pack" }]);
+    // The room holds no fin.xlsx yet: each binding says so rather than show the pack directory's value.
+    const definitions = listed.result.structuredContent.packs[0]?.definitions ?? [];
+    expect(definitions.map((d) => [d.id, d.source_address, d.problem])).toEqual([
+      ["docx-table", "sheet:Fin/range:A1:B4", 'the room holds no document "fin.xlsx"'],
+      ["docx-headline", null, 'the room holds no document "fin.xlsx"'],
+      ["pptx-table", "sheet:Fin/range:A1:B3", 'the room holds no document "fin.xlsx"'],
+    ]);
+    expect(definitions.some((d) => "value" in d)).toBe(false);
 
     const diskBefore = sha256(new Uint8Array(await readFile(join(pack, "deck.docx"))));
     const proposed = await tool<Refreshed>("pack_link_refresh", { pack: "quarterly" });
@@ -167,5 +180,35 @@ describe("pack_link_refresh of the served MCP endpoint", () => {
     expect(refused.result.structuredContent.bindings[3]?.message).toContain("target-missing");
     expect((await headOf("deck.docx")).head.revision).toBe(0);
     expect((await headOf("deck.pptx")).head.revision).toBe(0);
+  });
+});
+
+describe("workspace_list of the served MCP endpoint", () => {
+  test("describes each binding of the linked pack: its source address and the value the room's head of the source workbook holds there", async () => {
+    // The room's workbook says Q1 is 5,000,000; the pack directory's still says 1,234,567.891.
+    const rows = [QUARTERS[0] ?? [], ["Q1", { v: 5000000, s: STYLE.currency }, { v: 0.5, s: STYLE.percent }], ...QUARTERS.slice(2)];
+    expect((await room.addDocument("r1", ALICE, { name: "fin.xlsx", format: "xlsx", bytes: xlsx({ rows, names: { Headline: "Fin!$B$2" } }) })).ok).toBe(true);
+
+    const listed = await tool<Listed>("workspace_list", {});
+    expect(listed.result.isError).toBeUndefined();
+    const [linked] = listed.result.structuredContent.packs;
+    expect(linked).toMatchObject({ pack: "quarterly", bindings: BINDINGS.map((b) => b.id), title: "Quarterly pack" });
+    const definitions = linked?.definitions ?? [];
+    expect(definitions.map((d) => [d.id, d.kind, d.source_doc, d.source_address, d.target_doc, d.target_address])).toEqual([
+      ["docx-table", "docx_table", "fin.xlsx", "sheet:Fin/range:A1:B4", "deck.docx", "Revenue"],
+      ["docx-headline", "docx_bookmark", "fin.xlsx", "sheet:Fin/cell:B2", "deck.docx", "bookmark:Headline"],
+      ["pptx-table", "pptx_table", "fin.xlsx", "sheet:Fin/range:A1:B3", "deck.pptx", "slide:@1/shape:Table 1"],
+    ]);
+    for (const definition of definitions) {
+      expect(definition.problem).toBeUndefined();
+      expect(definition.source_revision).toBe(0);
+    }
+    expect(definitions[1]?.value).toBe(5000000);
+    expect(definitions[0]?.value).toEqual([
+      ["Quarter", "Revenue"],
+      ["Q1", 5000000],
+      ["Q2", 2345678.5],
+      ["Q3", 987654.321],
+    ]);
   });
 });

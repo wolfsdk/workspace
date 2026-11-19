@@ -1,12 +1,15 @@
 import { useLayoutEffect, useRef, useState } from "preact/hooks";
 import {
+  addressOnSide,
   boxesOnPage,
+  changesOf,
   entryKey,
   formatTyped,
   outlined,
   placeTags,
   readingOrder,
   sideShown,
+  tableCellRegions,
   type Rect,
   type TagRequest,
 } from "@wolfsdk/protocol";
@@ -146,7 +149,8 @@ let layerCount = 0;
  * naming its change type, placed by `placeTags` where it covers no other content; a tag with no such
  * place is shown only while its outline is hovered, focused or its change selected. The outlines are
  * one listbox per page in reading order, with one tab stop for all pages (see `focusPass`); the keys
- * are `handleOutlineKey` (keys.ts). */
+ * are `handleOutlineKey` (keys.ts). A PPTX table cell, which the engine draws no region for, is
+ * outlined in the box of `tableCellRegions`. */
 function ChangeOutlines({ host, page, pxPerPt, widthPx, heightPx }: PageOverlayProps) {
   const snap = useEditor(host);
   const store = useReview(host);
@@ -194,7 +198,8 @@ function ChangeOutlines({ host, page, pxPerPt, widthPx, heightPx }: PageOverlayP
   const side = sideShown(entry, snap.state);
   if (!side) return null;
   const regions = host.regionsOn(page);
-  const boxes = boxesOnPage(entry, side, regions);
+  const cells = tableCellRegions(snap.state).filter((r) => r.page === page);
+  const boxes = boxesOnPage(entry, side, cells.length > 0 ? [...regions, ...cells] : regions);
   if (boxes.length === 0) return null;
   const boxRects = boxes.map((b) => b.region.bbox_pt.map((v) => v * pxPerPt) as Rect);
   const tags = placeTags(
@@ -203,10 +208,21 @@ function ChangeOutlines({ host, page, pxPerPt, widthPx, heightPx }: PageOverlayP
       text: change.change,
       size: tagSizes.get(change.change) ?? [change.change.length * 7 + 8, 14],
     })),
+    // The drawn content only: a cell's table region contains the cell, so its tag may sit on the table.
     regions.map((r) => r.bbox_pt.map((v) => v * pxPerPt) as Rect),
     [widthPx, heightPx],
   );
   const selected = store.ui.selectedChange?.revision === entry.revision ? store.ui.selectedChange.index : -1;
+  // A selected record no region carries (the paragraph of a deck table cell) selects the innermost outline holding it.
+  const selectedChange = changesOf(entry)[selected];
+  const inside =
+    selectedChange && outlined(entry, selected, snap.state) === false
+      ? addressOnSide(entry, selectedChange, side)
+      : null;
+  const holder = inside
+    ? boxes.filter((b) => inside.startsWith(`${b.address}/`)).sort((a, b) => b.address.length - a.address.length)[0]?.index
+    : undefined;
+  const isSelected = (index: number): boolean => index === selected || index === holder;
   const rejected = store.decisionOf(entry) === "reject";
   const ek = entryKey(entry);
   // Several changes of one object draw stacked outlines; only the first is filled, so the fills do
@@ -238,10 +254,10 @@ function ChangeOutlines({ host, page, pxPerPt, widthPx, heightPx }: PageOverlayP
           <div
             // A new entry gets new elements, so a focused outline never turns into another change.
             key={`${ek}:${index}:${i}`}
-            class={`we-review-box we-review-${change.change} we-review-side-${side}${stacked ? " we-review-stacked" : ""}${index === selected ? " we-review-selected" : ""}${rejected ? " we-review-rejected" : ""}`}
+            class={`we-review-box we-review-${change.change} we-review-side-${side}${stacked ? " we-review-stacked" : ""}${isSelected(index) ? " we-review-selected" : ""}${rejected ? " we-review-rejected" : ""}`}
             style={{ left: `${x}px`, top: `${y}px`, width: `${w}px`, height: `${h}px` }}
             role="option"
-            aria-selected={index === selected}
+            aria-selected={isSelected(index)}
             aria-label={outlineName(change, address, rejected)}
             data-testid={`review-overlay-${index}`}
             data-index={index}

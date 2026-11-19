@@ -11,6 +11,10 @@ approves it, and every change is an entry in an append-only log.
   workers in a `WorkerPool`. This package contains no format logic and no engine binary.
 - **Seats.** The engine reads the licence. Without a `WOLF_LICENSE_KEY` it grants the Community Self-Host terms:
   one workspace and up to five seats.
+- **Assistant.** `AssistantService` answers `wolfsdk.assistant.v1` on the room WebSocket (the `assistant` option of
+  `startWsServer`): a user asks, a model works through tools you supply as an agent on that user's seat, and each
+  task is stored with its tokens and counted against an optional monthly allowance per seat.
+  [`@wolfsdk/workspace`](../workspace-cli) wires it to the MCP tools and to `serve`.
 
 It runs on [Bun](https://bun.sh) 1.4 or later and ships TypeScript source.
 

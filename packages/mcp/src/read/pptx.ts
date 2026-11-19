@@ -1,16 +1,18 @@
 // PPTX reader: slides in `p:sldIdLst` order, the shapes of each slide in z-order (groups descended, connectors
-// skipped), table rows and cells, and the notes body. Addresses follow section 3.4 of `docs/agent-api.md`:
-// `slide:#<sldId>/shape:#<cNvPr id>[/row:@r[/cell:@c]]`, `slide:#<sldId>/notes`. Slide layouts and masters are
-// never read: an inherited placeholder is addressed through the slide shape that references it.
+// skipped), table rows and cells, chart series and their points, and the notes body. Addresses follow section 3.4
+// of `docs/agent-api.md`: `slide:#<sldId>/shape:#<cNvPr id>[/row:@r[/cell:@c]]`,
+// `slide:#<sldId>/shape:#<cNvPr id>/chart/series:@s[/point:@p]`, `slide:#<sldId>/notes`. Slide layouts and masters
+// are never read: an inherited placeholder is addressed through the slide shape that references it.
 import { createHash } from "node:crypto";
 import { ReadError } from "./model.ts";
 import type { Block, BlockMeta, CellEntry, ReadableDocument, SearchUnit } from "./model.ts";
 import { relationshipsOf } from "./rels.ts";
+import type { Relationship } from "./rels.ts";
 import { attr, childElements, descendants, firstChild, parseXml, textOf } from "./xml.ts";
 import type { XmlElement } from "./xml.ts";
 import { ZipArchive } from "./zip.ts";
 
-/** Units (slides, shapes, paragraphs, rows, cells) materialized from one presentation. */
+/** Units (slides, shapes, paragraphs, rows, cells, series, points) materialized from one presentation. */
 const MAX_UNITS = 200_000;
 /** Characters kept of one paragraph or of one unit's joined text. */
 const MAX_TEXT = 100_000;
@@ -22,14 +24,15 @@ const FALLBACK_PART = "ppt/presentation.xml";
 type Para = { text: string; level: number; bullet: boolean };
 
 /** One addressable unit with its structural children: group members and the notes under a slide, rows under a
- * table frame, cells under a row. */
+ * table frame, cells under a row, series under a chart frame, points under a series. */
 type Node = {
-  kind: "slide" | "shape" | "notes" | "row" | "cell";
+  kind: "slide" | "shape" | "notes" | "row" | "cell" | "series" | "point";
   block: Block;
   kids: Node[];
   paras: Para[];
   /** The persistent id (`sldId`, `cNvPr@id`) when the file has a usable one. */
   id: string | undefined;
+  /** The shape name, the series name or the point's category: what a name key matches. */
   name: string | undefined;
   title: boolean;
   /** Every shape of a slide, groups flattened in document order: the scope of `shape:` keys. */
@@ -58,6 +61,15 @@ function makeNode(kind: Node["kind"], block: Block, id: string | undefined, name
   return { kind, block, kids: [], paras, id, name, title: false, flat: [] };
 }
 
+/** Give each node whose name is non-empty and unique among `nodes` the alias `<prefix><escaped name>`. */
+function nameAliases(nodes: readonly Node[], prefix: string): void {
+  const counts = new Map<string, number>();
+  for (const node of nodes) counts.set(node.name ?? "", (counts.get(node.name ?? "") ?? 0) + 1);
+  for (const node of nodes) {
+    if (node.name && counts.get(node.name) === 1) node.block.aliases = [`${prefix}${escapeName(node.name)}`];
+  }
+}
+
 /** The paragraphs of a text body: `a:t` of runs and fields, `a:br` as a newline. */
 function readParas(body: XmlElement | undefined, bodyPlaceholder: boolean, budget: Budget): Para[] {
   const out: Para[] = [];
@@ -84,7 +96,15 @@ function readParas(body: XmlElement | undefined, bodyPlaceholder: boolean, budge
 
 const joinParas = (paras: readonly Para[]): string => clip(paras.map((p) => p.text).join("\n"));
 
-type SlideScope = { address: string; flat: Node[]; budget: Budget };
+type SlideScope = {
+  address: string;
+  flat: Node[];
+  budget: Budget;
+  zip: ZipArchive;
+  /** The slide part, whose relationships name the chart parts of its graphic frames. */
+  part: string;
+  rels?: Map<string, Relationship>;
+};
 
 const NV_BY_TAG: Record<string, { nv: string; kind: "shape" | "picture" | "group" | "frame" } | undefined> = {
   sp: { nv: "nvSpPr", kind: "shape" },
@@ -114,8 +134,9 @@ function walkShapes(parent: XmlElement, depth: number, scope: SlideScope, out: N
     const placeholder = ph ? (attr(ph, "type") ?? "obj") : null;
 
     const tbl = spec.kind === "frame" ? descendants(el, "tbl")[0] : undefined;
+    const chart = spec.kind === "frame" && !tbl ? descendants(el, "chart")[0] : undefined;
     let kind: string = spec.kind;
-    if (spec.kind === "frame") kind = tbl ? "table" : descendants(el, "chart").length > 0 ? "chart" : "shape";
+    if (spec.kind === "frame") kind = tbl ? "table" : chart ? "chart" : "shape";
 
     const position = scope.flat.length + 1;
     const address = `${scope.address}/shape:${id !== undefined ? `#${id}` : `@${position}`}`;
@@ -129,6 +150,7 @@ function walkShapes(parent: XmlElement, depth: number, scope: SlideScope, out: N
     out.push(node);
 
     if (tbl) readTable(tbl, node, depth, scope.budget);
+    else if (chart) readChart(chart, node, depth, scope);
     else if (spec.kind === "group") walkShapes(el, depth + 1, scope, node.kids);
   }
 }
@@ -156,6 +178,92 @@ function readTable(tbl: XmlElement, frame: Node, depth: number, budget: Budget):
     meta.rows = frame.kids.length;
     meta.columns = columns;
   }
+}
+
+/** The cached points of a series data source (`c:tx`, `c:cat`, `c:val`, `c:xVal`, `c:yVal`): the string or number
+ * cache of its reference, or its literal, by `c:pt@idx` over `c:ptCount`; `undefined` where the cache has no point.
+ * A multi-level category cache gives its first (innermost) level. */
+function cachePoints(source: XmlElement | undefined, budget: Budget): (string | undefined)[] {
+  if (!source) return [];
+  let cache: XmlElement | undefined;
+  for (const local of ["strCache", "numCache", "strLit", "numLit", "multiLvlStrCache"]) {
+    cache = descendants(source, local)[0];
+    if (cache) break;
+  }
+  if (cache?.local === "multiLvlStrCache") cache = firstChild(cache, "lvl");
+  if (!cache) return [];
+  const limit = Math.max(0, budget.left);
+  const byIdx = new Map<number, string>();
+  let count = 0;
+  for (const pt of childElements(cache, "pt")) {
+    const idx = Number.parseInt(attr(pt, "idx") ?? "", 10);
+    if (!Number.isInteger(idx) || idx < 0 || idx >= limit) continue;
+    const v = firstChild(pt, "v");
+    byIdx.set(idx, clip(v ? textOf(v) : ""));
+    count = Math.max(count, idx + 1);
+  }
+  const ptCount = firstChild(cache, "ptCount");
+  const declared = Number.parseInt((ptCount && attr(ptCount, "val")) ?? "", 10);
+  if (Number.isInteger(declared) && declared > count) count = Math.min(declared, limit);
+  return Array.from({ length: count }, (_, i) => byIdx.get(i));
+}
+
+/** The name of a series: the cache of its `c:tx` reference, or the literal `c:tx/c:v`. */
+function seriesName(ser: XmlElement, budget: Budget): string {
+  const tx = firstChild(ser, "tx");
+  if (!tx) return "";
+  const literal = firstChild(tx, "v");
+  if (literal) return clip(textOf(literal));
+  return clip(cachePoints(tx, budget).filter((text) => text !== undefined).join(" "));
+}
+
+/** The number a cached value reads as, or null for an empty or non-numeric one. */
+function cachedNumber(raw: string | undefined): number | null {
+  if (raw === undefined || raw.trim() === "") return null;
+  const value = Number(raw);
+  return Number.isFinite(value) ? value : null;
+}
+
+/** The series of the chart part the frame's `c:chart` names, in plot-area order, each with one point per cached
+ * category or value. A chart part the slide does not reach reads as a chart without series. */
+function readChart(chart: XmlElement, frame: Node, depth: number, scope: SlideScope): void {
+  const rid = attr(chart, "r:id");
+  scope.rels ??= relationshipsOf(scope.zip, scope.part);
+  const rel = rid === undefined ? undefined : scope.rels.get(rid);
+  if (!rel || rel.external || !scope.zip.has(rel.target)) return;
+  const root = parseXml(scope.zip.text(rel.target));
+  const chartSpace = firstChild(root, "chart");
+  const plotArea = chartSpace ? firstChild(chartSpace, "plotArea") : undefined;
+  const series: Node[] = [];
+  const chartAddress = `${frame.block.address}/chart`;
+  for (const plot of plotArea ? childElements(plotArea) : []) {
+    for (const ser of childElements(plot, "ser")) {
+      if (!take(scope.budget)) break;
+      const name = seriesName(ser, scope.budget);
+      const categories = cachePoints(firstChild(ser, "cat") ?? firstChild(ser, "xVal"), scope.budget);
+      const values = cachePoints(firstChild(ser, "val") ?? firstChild(ser, "yVal"), scope.budget);
+      const address = `${chartAddress}/series:@${series.length + 1}`;
+      const meta: BlockMeta = { chart_type: plot.local, points: 0 };
+      const block: Block = { address, kind: "series", depth: depth + 1, text: name, meta };
+      if (name !== "") block.label = name;
+      const node = makeNode("series", block, undefined, name, []);
+      const count = Math.max(categories.length, values.length);
+      for (let i = 0; i < count; i++) {
+        if (!take(scope.budget)) break;
+        const category = categories[i];
+        const raw = values[i];
+        const point: Block = { address: `${address}/point:@${i + 1}`, kind: "point", depth: depth + 2, text: raw ?? "", meta: { category: category ?? null, value: cachedNumber(raw) } };
+        if (category !== undefined && category !== "") point.label = category;
+        node.kids.push(makeNode("point", point, undefined, category, []));
+      }
+      meta.points = node.kids.length;
+      nameAliases(node.kids, `${address}/point:`);
+      series.push(node);
+    }
+  }
+  nameAliases(series, `${chartAddress}/series:`);
+  frame.kids = series;
+  if (frame.block.meta) frame.block.meta.series = series.length;
 }
 
 /** The body placeholder paragraphs of the notes slide `slidePart` points to, or none when it has no notes. */
@@ -190,16 +298,12 @@ function readSlide(zip: ZipArchive, part: string, n: number, sldId: string | und
   if (root.local !== "sld") throw new ReadError("invalid-input", `${part} is not a slide part`);
   const id = sldId !== undefined && KEY_ID.test(sldId) ? sldId : undefined;
   const address = `slide:${id !== undefined ? `#${id}` : `@${n}`}`;
-  const scope: SlideScope = { address, flat: [], budget };
+  const scope: SlideScope = { address, flat: [], budget, zip, part };
   const kids: Node[] = [];
   const tree = shapeTree(root);
   if (tree) walkShapes(tree, 1, scope, kids);
 
-  const counts = new Map<string, number>();
-  for (const shape of scope.flat) counts.set(shape.name ?? "", (counts.get(shape.name ?? "") ?? 0) + 1);
-  for (const shape of scope.flat) {
-    if (shape.name && counts.get(shape.name) === 1) shape.block.aliases = [`${address}/shape:${escapeName(shape.name)}`];
-  }
+  nameAliases(scope.flat, `${address}/shape:`);
   const titleShape = scope.flat.find((shape) => shape.title && hasText(shape.paras));
   const label = titleShape ? titleShape.paras.map((p) => p.text).join(" ").replace(/\s+/g, " ").trim() : undefined;
 
@@ -247,15 +351,18 @@ function readPresentation(bytes: Uint8Array): Node[] {
   return slides;
 }
 
-/** The children of `parent` (the document when undefined) that a segment of `kind` ranges over. */
-function candidates(slides: readonly Node[], parent: Node | undefined, kind: string): Node[] {
+/** The children of `parent` (the document when undefined) that a segment of `kind` ranges over. `series:` ranges
+ * over a chart frame's series only right after its `chart` segment. */
+function candidates(slides: readonly Node[], parent: Node | undefined, kind: string, afterChart: boolean): Node[] {
   if (!parent) return kind === "slide" ? [...slides] : [];
   if (parent.kind === "slide") {
     if (kind === "shape") return parent.flat;
     if (kind === "notes") return parent.kids.filter((kid) => kid.kind === "notes");
   } else if (parent.kind === "shape" && kind === "row") {
     return parent.kids.filter((kid) => kid.kind === "row");
-  } else if (parent.kind === "row" && kind === "cell") {
+  } else if (parent.kind === "shape" && kind === "series") {
+    return afterChart ? parent.kids.filter((kid) => kid.kind === "series") : [];
+  } else if ((parent.kind === "row" && kind === "cell") || (parent.kind === "series" && kind === "point")) {
     return parent.kids;
   }
   return [];
@@ -284,7 +391,8 @@ function hasPara(paras: readonly Para[], key: string): boolean {
   return (match[2] === undefined ? (hits.length === 1 ? hits[0] : undefined) : hits[Number(match[2]) - 1]) !== undefined;
 }
 
-/** The node `target` names; `para:` and `chart` segments end at their shape (or cell, or notes). */
+/** The node `target` names; a `para:` segment ends at its shape (or cell, or notes), and a final `chart` segment
+ * at its chart frame. */
 function resolve(slides: readonly Node[], target: string): Node {
   const fail = (): never => {
     throw new ReadError("address-unresolved", `${target} names nothing in this document`);
@@ -301,11 +409,12 @@ function resolve(slides: readonly Node[], target: string): Node {
       if (!hasPara(node.paras, key)) fail();
       break;
     }
-    if (node && last && kind === "chart" && key === undefined) {
-      if (node.block.kind !== "chart") fail();
-      break;
+    if (node && kind === "chart" && key === undefined) {
+      if (node.block.kind !== "chart" || segments[i - 1] === "chart") fail();
+      if (last) break;
+      continue;
     }
-    const found: Node[] = candidates(slides, node, kind);
+    const found: Node[] = candidates(slides, node, kind, segments[i - 1] === "chart");
     const next: Node | undefined = key === undefined ? (kind === "notes" ? found[0] : undefined) : pick(found, key);
     if (!next) return fail();
     node = next;
@@ -337,6 +446,13 @@ function textLines(node: Node, out: string[]): void {
     case "cell":
       for (const para of node.paras) if (para.text.trim() !== "") out.push(para.text);
       break;
+    case "series":
+      out.push(node.block.text);
+      for (const kid of node.kids) textLines(kid, out);
+      break;
+    case "point":
+      out.push(`${node.name ?? ""}\t${node.block.text}`);
+      break;
     case "notes":
       out.push("Notes: ");
       for (const para of node.paras) if (para.text.trim() !== "") out.push(para.text);
@@ -344,13 +460,23 @@ function textLines(node: Node, out: string[]): void {
   }
 }
 
-function pipeTable(rows: readonly Node[]): string | undefined {
-  const grid = rows.map((row) => row.kids.map((cell) => cell.block.text.replace(/\s*\n\s*/g, " ").replace(/\|/g, "\\|").trim()));
-  const width = grid.reduce((widest, row) => Math.max(widest, row.length), 0);
+/** `grid` as a pipe table whose first row is the header, ragged rows padded; undefined when it has no column. */
+function pipeGrid(grid: readonly (readonly string[])[]): string | undefined {
+  const cells = grid.map((row) => row.map((text) => text.replace(/\s*\n\s*/g, " ").replace(/\|/g, "\\|").trim()));
+  const width = cells.reduce((widest, row) => Math.max(widest, row.length), 0);
   if (width === 0) return undefined;
   const line = (row: readonly string[]): string => `| ${Array.from({ length: width }, (_, c) => row[c] ?? "").join(" | ")} |`;
-  const [head, ...rest] = grid as [string[], ...string[][]];
+  const [head, ...rest] = cells as [string[], ...string[][]];
   return [line(head), `| ${Array.from({ length: width }, () => "---").join(" | ")} |`, ...rest.map(line)].join("\n");
+}
+
+function pipeTable(rows: readonly Node[]): string | undefined {
+  return pipeGrid(rows.map((row) => row.kids.map((cell) => cell.block.text)));
+}
+
+/** Points as a two-column pipe table of category and cached value, under the header `Category | <heading>`. */
+function pointTable(heading: string, points: readonly Node[]): string | undefined {
+  return pipeGrid([["Category", heading], ...points.map((point) => [point.name ?? "", point.block.text])]);
 }
 
 /** Paragraphs as markdown blocks: runs of bullets form one list, other paragraphs stand alone. */
@@ -400,6 +526,16 @@ function markdownBlocks(node: Node, out: string[], inSlide: boolean): void {
     case "cell":
       paraBlocks(node.paras.map((para) => ({ ...para, bullet: false })), out);
       break;
+    case "series": {
+      const table = pointTable(node.block.text, node.kids);
+      if (table) out.push(table);
+      break;
+    }
+    case "point": {
+      const table = pointTable("Value", [node]);
+      if (table) out.push(table);
+      break;
+    }
     case "notes": {
       const quoted = node.paras.filter((para) => para.text.trim() !== "").map((para) => para.text.split("\n").map((line) => `> ${line}`).join("\n"));
       if (quoted.length > 0) out.push(quoted.join("\n>\n"));
@@ -423,6 +559,8 @@ function collectUnits(node: Node, out: SearchUnit[]): void {
         if (para.text.trim() !== "") out.push({ address: `${node.block.address}/para:@${i + 1}`, text: para.text });
       });
       break;
+    case "series":
+      return;
   }
   for (const kid of node.kids) collectUnits(kid, out);
 }

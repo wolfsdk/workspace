@@ -34,13 +34,43 @@ function table(id: number, name: string, rows: string[][]): string {
   );
 }
 
-const chart = (id: number, name: string): string =>
+const chart = (id: number, name: string, rid = "rId9"): string =>
   `<p:graphicFrame><p:nvGraphicFramePr><p:cNvPr id="${id}" name="${name}"/><p:cNvGraphicFramePr/><p:nvPr/></p:nvGraphicFramePr><p:xfrm/>` +
-  `<a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/chart"><c:chart xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" r:id="rId9"/></a:graphicData></a:graphic></p:graphicFrame>`;
+  `<a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/chart"><c:chart xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" r:id="${rid}"/></a:graphicData></a:graphic></p:graphicFrame>`;
 
-type SlideSpec = { id: number; shapes: string; hidden?: boolean; notes?: string };
+/** `c:pt` entries of a cache: `undefined` leaves the index out, as a chart does for a blank point. */
+const pts = (values: readonly (string | undefined)[]): string =>
+  `<c:ptCount val="${values.length}"/>${values.map((value, i) => (value === undefined ? "" : `<c:pt idx="${i}"><c:v>${value}</c:v></c:pt>`)).join("")}`;
+const strRef = (f: string, values: readonly (string | undefined)[]): string => `<c:strRef><c:f>${f}</c:f><c:strCache>${pts(values)}</c:strCache></c:strRef>`;
+const numRef = (f: string, values: readonly (string | undefined)[]): string =>
+  `<c:numRef><c:f>${f}</c:f><c:numCache><c:formatCode>General</c:formatCode>${pts(values)}</c:numCache></c:numRef>`;
+const ser = (idx: number, tx: string, cat: string, val: string): string =>
+  `<c:ser><c:idx val="${idx}"/><c:order val="${idx}"/><c:tx>${tx}</c:tx><c:cat>${cat}</c:cat><c:val>${val}</c:val></c:ser>`;
 
-/** A minimal package: `[Content_Types].xml`, `_rels/.rels`, the presentation with its rels, each slide and its notes. */
+/** A chart part: a bar chart with Sales (a referenced name) and Cost (a literal name, Q2 blank), one series filtered
+ * out in an extension, and a line chart whose categories are two-level and whose values are a literal. */
+function chartXml(): string {
+  const quarters = strRef("Sheet1!$A$2:$A$4", ["Q1", "Q2", "Q3"]);
+  const filtered =
+    '<c:extLst><c:ext uri="{02D57815-91ED-43cb-92C2-25804820EDAC}"><c15:filteredBarSeries xmlns:c15="http://schemas.microsoft.com/office/drawing/2012/chart">' +
+    `<c15:ser>${ser(9, strRef("Sheet1!$E$1", ["Hidden"]), quarters, numRef("Sheet1!$E$2:$E$4", ["1", "2", "3"]))}</c15:ser></c15:filteredBarSeries></c:ext></c:extLst>`;
+  const bar =
+    `<c:barChart><c:barDir val="col"/><c:grouping val="clustered"/>` +
+    ser(0, strRef("Sheet1!$B$1", ["Sales"]), quarters, numRef("Sheet1!$B$2:$B$4", ["10", "20.5", "30"])) +
+    ser(1, "<c:v>Cost</c:v>", quarters, numRef("Sheet1!$C$2:$C$4", ["4", undefined, "6"])) +
+    `${filtered}<c:axId val="1"/><c:axId val="2"/></c:barChart>`;
+  const twoLevel =
+    `<c:multiLvlStrRef><c:f>Sheet1!$F$2:$G$3</c:f><c:multiLvlStrCache><c:ptCount val="2"/>` +
+    `<c:lvl><c:pt idx="0"><c:v>Jan</c:v></c:pt><c:pt idx="1"><c:v>Feb</c:v></c:pt></c:lvl><c:lvl><c:pt idx="0"><c:v>2026</c:v></c:pt></c:lvl></c:multiLvlStrCache></c:multiLvlStrRef>`;
+  const line = `<c:lineChart><c:grouping val="standard"/>${ser(2, strRef("Sheet1!$D$1", ["Target"]), twoLevel, `<c:numLit>${pts(["7", "x"])}</c:numLit>`)}<c:axId val="1"/><c:axId val="2"/></c:lineChart>`;
+  return `${XML}<c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" ${NS}><c:chart><c:plotArea><c:layout/>${bar}${line}<c:catAx/><c:valAx/></c:plotArea></c:chart></c:chartSpace>`;
+}
+
+/** `charts` maps a slide relationship id to the chart part it names. */
+type SlideSpec = { id: number; shapes: string; hidden?: boolean; notes?: string; charts?: Record<string, string> };
+
+/** A minimal package: `[Content_Types].xml`, `_rels/.rels`, the presentation with its rels, each slide with its
+ * notes and chart parts. */
 function buildPptx(slides: SlideSpec[], options: { skipMain?: boolean; mainXml?: string } = {}): Uint8Array {
   const files: { name: string; data: string }[] = [
     {
@@ -69,11 +99,9 @@ function buildPptx(slides: SlideSpec[], options: { skipMain?: boolean; mainXml?:
       name: `ppt/slides/slide${i + 1}.xml`,
       data: `${XML}<p:sld ${NS}${slide.hidden ? ' show="0"' : ""}><p:cSld><p:spTree><p:nvGrpSpPr><p:cNvPr id="1" name=""/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr><p:grpSpPr/>${slide.shapes}</p:spTree></p:cSld></p:sld>`,
     });
+    const rels: string[] = [];
     if (slide.notes !== undefined) {
-      files.push({
-        name: `ppt/slides/_rels/slide${i + 1}.xml.rels`,
-        data: `${XML}<Relationships xmlns="${RELS_NS}"><Relationship Id="rId1" Type="${REL}/notesSlide" Target="../notesSlides/notesSlide${i + 1}.xml"/></Relationships>`,
-      });
+      rels.push(`<Relationship Id="rId1" Type="${REL}/notesSlide" Target="../notesSlides/notesSlide${i + 1}.xml"/>`);
       files.push({
         name: `ppt/notesSlides/notesSlide${i + 1}.xml`,
         data:
@@ -84,6 +112,12 @@ function buildPptx(slides: SlideSpec[], options: { skipMain?: boolean; mainXml?:
           "</p:spTree></p:cSld></p:notes>",
       });
     }
+    Object.entries(slide.charts ?? {}).forEach(([rid, xml], k) => {
+      const part = `chart${i + 1}_${k + 1}.xml`;
+      rels.push(`<Relationship Id="${rid}" Type="${REL}/chart" Target="../charts/${part}"/>`);
+      files.push({ name: `ppt/charts/${part}`, data: xml });
+    });
+    if (rels.length > 0) files.push({ name: `ppt/slides/_rels/slide${i + 1}.xml.rels`, data: `${XML}<Relationships xmlns="${RELS_NS}">${rels.join("")}</Relationships>` });
   });
   return writeZip(files);
 }
@@ -105,6 +139,18 @@ function fixture(): Uint8Array {
     { id: 300, shapes: slide2, hidden: true },
   ]);
 }
+
+/** One slide holding a title, the chart frame `Chart 1` whose part is `chartXml`, and a table. */
+const chartDeck = (): ReadableDocument =>
+  openPptx(
+    buildPptx([
+      {
+        id: 256,
+        shapes: sp(2, "Title 1", para("Revenue"), '<p:ph type="title"/>') + chart(4, "Chart 1") + table(5, "Table 5", [["a"]]),
+        charts: { rId9: chartXml() },
+      },
+    ]),
+  );
 
 function readError(fn: () => unknown): ReadError {
   try {
@@ -326,6 +372,82 @@ describe("openPptx targets", () => {
     }
     expect(readError(() => doc.text("slide:#999")).code).toBe("address-unresolved");
     expect(readError(() => doc.markdown("slide:#999")).code).toBe("address-unresolved");
+  });
+});
+
+describe("openPptx chart series", () => {
+  const doc = chartDeck();
+  const SERIES = "slide:#256/shape:#4/chart/series";
+
+  test("a series address, as a pack binding writes it, reads the name, categories and values of the chart cache", () => {
+    const target = "slide:@1/shape:Chart 1/chart/series:Sales";
+    expect(doc.blocks(target)).toEqual([
+      { address: `${SERIES}:@1`, aliases: [`${SERIES}:Sales`], kind: "series", depth: 2, text: "Sales", label: "Sales", meta: { chart_type: "barChart", points: 3 } },
+      { address: `${SERIES}:@1/point:@1`, aliases: [`${SERIES}:@1/point:Q1`], kind: "point", depth: 3, text: "10", label: "Q1", meta: { category: "Q1", value: 10 } },
+      { address: `${SERIES}:@1/point:@2`, aliases: [`${SERIES}:@1/point:Q2`], kind: "point", depth: 3, text: "20.5", label: "Q2", meta: { category: "Q2", value: 20.5 } },
+      { address: `${SERIES}:@1/point:@3`, aliases: [`${SERIES}:@1/point:Q3`], kind: "point", depth: 3, text: "30", label: "Q3", meta: { category: "Q3", value: 30 } },
+    ]);
+    expect(doc.text(target)).toBe("Sales\nQ1\t10\nQ2\t20.5\nQ3\t30");
+    expect(doc.markdown(target)).toBe("| Category | Sales |\n| --- | --- |\n| Q1 | 10 |\n| Q2 | 20.5 |\n| Q3 | 30 |");
+    for (const same of [`${SERIES}:@1`, `${SERIES}:Sales`, "slide:#256/shape:#4/chart/series:@1"]) expect(doc.blocks(same)).toEqual(doc.blocks(target));
+  });
+
+  test("a point resolves by category or position; a blank cached value reads as null", () => {
+    expect(addresses(doc, "slide:@1/shape:Chart 1/chart/series:Sales/point:Q2")).toEqual([`${SERIES}:@1/point:@2`]);
+    expect(doc.text(`${SERIES}:@1/point:@2`)).toBe("Q2\t20.5");
+    expect(doc.markdown(`${SERIES}:Sales/point:Q2`)).toBe("| Category | Value |\n| --- | --- |\n| Q2 | 20.5 |");
+    const cost = doc.blocks(`${SERIES}:Cost`);
+    expect(cost[0]?.address).toBe(`${SERIES}:@2`);
+    expect(cost.slice(1).map((block) => [block.text, block.meta])).toEqual([
+      ["4", { category: "Q1", value: 4 }],
+      ["", { category: "Q2", value: null }],
+      ["6", { category: "Q3", value: 6 }],
+    ]);
+    expect(doc.text(`${SERIES}:Cost`)).toBe("Cost\nQ1\t4\nQ2\t\nQ3\t6");
+  });
+
+  test("the chart frame lists its series addresses, extension series excluded, with their points", () => {
+    const blocks = doc.blocks("slide:@1/shape:Chart 1");
+    expect(blocks[0]).toEqual({ address: "slide:#256/shape:#4", aliases: ["slide:#256/shape:Chart 1"], kind: "chart", depth: 1, text: "", label: "Chart 1", meta: { placeholder: null, paragraphs: 0, series: 3 } });
+    expect(blocks.filter((block) => block.kind === "series").map((block) => [block.address, block.aliases, block.label, block.meta])).toEqual([
+      [`${SERIES}:@1`, [`${SERIES}:Sales`], "Sales", { chart_type: "barChart", points: 3 }],
+      [`${SERIES}:@2`, [`${SERIES}:Cost`], "Cost", { chart_type: "barChart", points: 3 }],
+      [`${SERIES}:@3`, [`${SERIES}:Target`], "Target", { chart_type: "lineChart", points: 2 }],
+    ]);
+    expect(blocks).toHaveLength(1 + 3 + 3 + 3 + 2);
+    expect(doc.blocks("slide:#256/shape:#4/chart")).toEqual(blocks);
+    expect(doc.blocks(`${SERIES}:Target`).slice(1).map((block) => [block.label, block.meta])).toEqual([
+      ["Jan", { category: "Jan", value: 7 }],
+      ["Feb", { category: "Feb", value: null }],
+    ]);
+  });
+
+  test("whole-document views carry the chart data and search units leave it out", () => {
+    expect(doc.text()).toBe(["# Slide 1 - Revenue", "Revenue", "Sales", "Q1\t10", "Q2\t20.5", "Q3\t30", "Cost", "Q1\t4", "Q2\t", "Q3\t6", "Target", "Jan\t7", "Feb\tx", "a"].join("\n"));
+    expect(doc.markdown("slide:#256/shape:#4").split("\n\n")).toHaveLength(3);
+    expect(doc.units()).toEqual([
+      { address: "slide:#256/shape:#2/para:@1", text: "Revenue" },
+      { address: "slide:#256/shape:#5/row:@1/cell:@1", text: "a" },
+    ]);
+  });
+
+  test("series and point addresses that name nothing are address-unresolved", () => {
+    for (const target of [
+      "slide:#256/shape:#4/series:@1",
+      "slide:#256/shape:#4/chart/series:@4",
+      "slide:#256/shape:#4/chart/series:Nope",
+      "slide:#256/shape:#4/chart/series:Sales/point:Q9",
+      "slide:#256/shape:#4/chart/series:Sales/point:@4",
+      "slide:#256/shape:#4/chart/row:@1",
+      "slide:#256/shape:#4/chart/chart/series:@1",
+      "slide:#256/shape:#4/chart/series:@1/chart",
+      "slide:#256/shape:#5/chart/series:@1",
+      "slide:#256/shape:#2/chart/series:@1",
+    ]) {
+      const error = readError(() => doc.blocks(target));
+      expect(error.code).toBe("address-unresolved");
+      expect(error.message).toBe(`${target} names nothing in this document`);
+    }
   });
 });
 

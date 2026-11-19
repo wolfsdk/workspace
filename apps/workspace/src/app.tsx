@@ -1,21 +1,47 @@
 /** @jsxImportSource preact */
-// Wolf Workspace: sign in with an actor token, pick a room, and work its documents with the agents in it.
+// Wolf Workspace: sign in with an actor token (or, behind a hosting front, with the front's session and no token),
+// pick a room, and work its documents with the agents in it.
 import type { EngineSource } from "@wolfsdk/review";
 import type { RoomActor, RoomProposal } from "@wolfsdk/protocol/workspace";
 import { useCallback, useEffect, useMemo, useRef, useState } from "preact/hooks";
-import { ApiError, type PackStatus, type RoomRow, WorkspaceApi } from "./lib/api.ts";
+import { ApiError, type GuestScope, type PackStatus, type RoomRow, type WorkspaceApi } from "./lib/api.ts";
+import { assistantShown } from "./lib/assistant-client.ts";
 import { documentSummaries, historyOf, participantsOf, proposalsOf, threadsOf } from "./lib/room-state.ts";
 import { isDecided } from "./lib/review.ts";
-import { describeEngine, engineFor, formatOfFile, initialTheme, shareModeOf, takeToken, type Theme, THEME_KEY, TOKEN_KEY } from "./lib/session.ts";
-import { ActorBadge, ConnectionDot, downloadBytes, Icon, modKey, type Toast, Toasts } from "./ui/common.tsx";
+import { canShare } from "./lib/share.ts";
+import {
+  apiFor,
+  type Credential,
+  describeEngine,
+  engineFor,
+  formatOfFile,
+  type HostedSession,
+  initialTheme,
+  type PageIo,
+  probeHostedSession,
+  shareModeOf,
+  signOutHosted,
+  socketUrlFor,
+  startCredential,
+  takeToken,
+  type Theme,
+  THEME_KEY,
+  TOKEN_KEY,
+} from "./lib/session.ts";
+import { AssistantPanel, useAssistant } from "./ui/assistant-panel.tsx";
+import { ConnectionDot, downloadBytes, Icon, modKey, SessionControls, type Toast, Toasts } from "./ui/common.tsx";
 import { LeftRail } from "./ui/left-rail.tsx";
 import { type CommentPost, RightRail, type RightTab } from "./ui/right-rail.tsx";
-import { SignIn } from "./ui/sign-in.tsx";
+import { HostedGate, SignIn } from "./ui/sign-in.tsx";
+import { ShareDialog } from "./ui/share-dialog.tsx";
 import { Stage } from "./ui/stage.tsx";
 import { Switcher, type SwitcherItem } from "./ui/switcher.tsx";
 import { useRoom } from "./use-room.ts";
 
 const message = (e: unknown): string => (e instanceof Error ? e.message : String(e));
+
+/** The browser the page talks through: its own origin's `fetch`, and `location.assign` to leave. */
+const PAGE: PageIo = { fetch: (input, init) => fetch(input, init), navigate: (path) => location.assign(path) };
 
 /** The token of the page, taken once: it leaves the address bar before anything renders. */
 function initialToken(): string | null {
@@ -24,24 +50,28 @@ function initialToken(): string | null {
   return taken.token;
 }
 
-type Signed = { token: string; actor: RoomActor; api: WorkspaceApi };
+/** A signed-in page: the credential it signed in with (a token, or a hosting front's session that holds no token),
+ * the actor the server says it stands for, its scope when it is a guest, and the API client for it. */
+type Signed = { credential: Credential; actor: RoomActor; guest: GuestScope | null; api: WorkspaceApi };
 
 export function App() {
   const [boot] = useState(initialToken);
   const [signed, setSigned] = useState<Signed | null>(null);
   const [authError, setAuthError] = useState<string | null>(null);
+  const [hostedError, setHostedError] = useState<{ session: HostedSession; error: string } | null>(null);
   const [checking, setChecking] = useState(false);
-  const [booting, setBooting] = useState(boot !== null);
+  const [booting, setBooting] = useState(true);
   const [switchingToken, setSwitchingToken] = useState(false);
 
   // A token counts once the server says whom it stands for; a refused one leaves the current session as it was.
   const signIn = useCallback(async (next: string): Promise<void> => {
     setChecking(true);
-    const api = new WorkspaceApi(location.origin, next);
+    const credential: Credential = { kind: "token", token: next };
+    const api = apiFor(credential, location.origin, PAGE);
     try {
-      const { actor } = await api.me();
+      const { actor, guest } = await api.me();
       sessionStorage.setItem(TOKEN_KEY, next);
-      setSigned({ token: next, actor, api });
+      setSigned({ credential, actor, guest, api });
       setAuthError(null);
       setSwitchingToken(false);
     } catch (e) {
@@ -55,9 +85,34 @@ export function App() {
     }
   }, []);
 
+  // Behind a hosting front the session cookie stands for the person: nothing goes to tab storage and the token form
+  // never shows. A 401 has the api open the front's sign-in page; any other failure offers to try again.
+  const enterHosted = useCallback(async (session: HostedSession): Promise<void> => {
+    setChecking(true);
+    const credential: Credential = { kind: "hosted", session };
+    const api = apiFor(credential, location.origin, PAGE);
+    try {
+      const { actor, guest } = await api.me();
+      setSigned({ credential, actor, guest, api });
+      setHostedError(null);
+    } catch (e) {
+      const error =
+        e instanceof ApiError && e.status === 401
+          ? "Your session has ended. Opening the sign-in page."
+          : `The server did not say who is signed in (GET /api/me: ${message(e)}).`;
+      setHostedError({ session, error });
+    } finally {
+      setChecking(false);
+    }
+  }, []);
+
+  // Start: a token of the address or the tab signs in as it always has; without one the page asks the hosting front
+  // once, before showing anything, and shows the token form when nothing answers for a session.
   useEffect(() => {
-    if (boot !== null) void signIn(boot).finally(() => setBooting(false));
-  }, [boot, signIn]);
+    void startCredential(boot, () => probeHostedSession(PAGE.fetch))
+      .then((credential) => (credential === null ? undefined : credential.kind === "token" ? signIn(credential.token) : enterHosted(credential.session)))
+      .finally(() => setBooting(false));
+  }, [boot, signIn, enterHosted]);
 
   if (booting) {
     return (
@@ -68,44 +123,73 @@ export function App() {
       </div>
     );
   }
+  if (signed === null && hostedError !== null) {
+    const { session, error } = hostedError;
+    return <HostedGate error={error} busy={checking} onRetry={() => void enterHosted(session)} />;
+  }
   if (signed === null) {
     return <SignIn error={authError} busy={checking} onSubmit={(next) => void signIn(next)} />;
   }
+  const { credential } = signed;
+  const hosted = credential.kind === "hosted" ? credential.session : null;
   return (
     <Workspace
-      key={`${signed.actor.kind}:${signed.actor.id}:${signed.token}`}
+      key={`${signed.actor.kind}:${signed.actor.id}:${credential.kind === "token" ? credential.token : "hosted"}`}
       api={signed.api}
-      token={signed.token}
+      socketUrl={socketUrlFor(credential, location.origin)}
       actor={signed.actor}
+      guest={signed.guest}
+      account={hosted?.account ?? null}
+      accountPage={hosted?.accountPage}
+      plansPage={hosted?.plansPage}
       switchingToken={switchingToken}
-      onSwitchToken={(open) => {
-        setAuthError(null);
-        setSwitchingToken(open);
-      }}
+      onSwitchToken={
+        hosted
+          ? null
+          : (open) => {
+              setAuthError(null);
+              setSwitchingToken(open);
+            }
+      }
       onSignIn={(next) => void signIn(next)}
       signInError={authError}
       checking={checking}
-      onSignOut={() => {
-        sessionStorage.removeItem(TOKEN_KEY);
-        setSigned(null);
-      }}
+      onSignOut={
+        hosted
+          ? () => signOutHosted(hosted, PAGE)
+          : () => {
+              sessionStorage.removeItem(TOKEN_KEY);
+              setSigned(null);
+            }
+      }
     />
   );
 }
 
 type WorkspaceProps = {
   api: WorkspaceApi;
-  token: string;
+  /** The room socket: with `?token=` for a token, with no `token` parameter behind a hosting front. */
+  socketUrl: string;
   actor: RoomActor;
+  /** The documents the actor is limited to when it is a guest; null for a member. A guest proposes and comments, and
+   * sees none of what it is refused: room creation, uploads, the pack, decisions, export, the assistant and sharing. */
+  guest: GuestScope | null;
+  /** The account a hosting front signed in; null on a self-hosted server. */
+  account: HostedSession["account"] | null;
+  /** The hosting front's pages for agent tokens and for the plan, when it names them (see `HostedSession`). */
+  accountPage?: string;
+  plansPage?: string;
   switchingToken: boolean;
-  onSwitchToken(open: boolean): void;
+  /** Null behind a hosting front: the front holds the session, so there is no token to switch. */
+  onSwitchToken: ((open: boolean) => void) | null;
   onSignIn(token: string): void;
   signInError: string | null;
   checking: boolean;
-  onSignOut(): void;
+  /** Leaves the session; a sign-out that did not finish rejects with what to do, and the page stays. */
+  onSignOut(): Promise<void> | void;
 };
 
-function Workspace({ api, token, actor, switchingToken, onSwitchToken, onSignIn, signInError, checking, onSignOut }: WorkspaceProps) {
+function Workspace({ api, socketUrl, actor, guest, account, accountPage, plansPage, switchingToken, onSwitchToken, onSignIn, signInError, checking, onSignOut }: WorkspaceProps) {
   const params = useMemo(() => new URLSearchParams(location.search), []);
   /** `?share=1`: a shared link shows the server's display-list snapshot and loads no engine. */
   const shareMode = useMemo(() => shareModeOf(location.search), []);
@@ -126,17 +210,39 @@ function Workspace({ api, token, actor, switchingToken, onSwitchToken, onSignIn,
   const [uploading, setUploading] = useState<string | null>(null);
   const [deciding, setDeciding] = useState<string | null>(null);
   const [toasts, setToasts] = useState<Toast[]>([]);
+  const [signingOut, setSigningOut] = useState(false);
+  const [sharing, setSharing] = useState(false);
   const dirty = useRef(0);
   const toastId = useRef(0);
 
-  const room = useRoom(token, roomId);
+  const room = useRoom(socketUrl, roomId);
   const view = room.view;
+  const assistant = useAssistant(room);
 
   const notify = useCallback((tone: Toast["tone"], text: string): void => {
     const id = ++toastId.current;
     setToasts((current) => [...current.slice(-3), { id, tone, text }]);
     setTimeout(() => setToasts((current) => current.filter((t) => t.id !== id)), tone === "danger" ? 9000 : 5000);
   }, []);
+
+  // Behind a hosting front a refused socket upgrade looks like any lost connection (a browser WebSocket shows no HTTP
+  // status), so ask the server who the caller is once per outage: an ended session answers 401, and the api opens the
+  // front's sign-in page.
+  const hosted = account !== null;
+  useEffect(() => {
+    if (hosted && room.status === "reconnecting") void api.me().catch(() => undefined);
+  }, [hosted, room.status, api]);
+
+  // A sign-out that did not finish keeps the page and says why; one that did has already left it.
+  const signOut = async (): Promise<void> => {
+    setSigningOut(true);
+    try {
+      await onSignOut();
+    } catch (e) {
+      notify("danger", message(e));
+      setSigningOut(false);
+    }
+  };
 
   // Theme on the page and on the element.
   useEffect(() => {
@@ -169,8 +275,9 @@ function Workspace({ api, token, actor, switchingToken, onSwitchToken, onSignIn,
     void loadRooms().then((list) => {
       setRoomId((current) => (current !== null && list.some((r) => r.room_id === current) ? current : (list[0]?.room_id ?? null)));
     });
-    void api.pack().then(setPack, () => setPack(null));
-  }, [api, loadRooms]);
+    // A guest is refused the pack: it does not ask.
+    if (guest === null) void api.pack().then(setPack, () => setPack(null));
+  }, [api, loadRooms, guest]);
 
   const documents = useMemo(() => documentSummaries(view.room), [view.room]);
   const activeDoc = documents.find((d) => d.name === docName) ?? null;
@@ -366,9 +473,11 @@ function Workspace({ api, token, actor, switchingToken, onSwitchToken, onSignIn,
   const history_ = useMemo(() => historyOf(view.room, scope), [view.room, scope]);
   const participants = useMemo(() => participantsOf(view), [view]);
   const proposalIds = useMemo(() => view.room?.proposals.map((p) => p.proposal_id) ?? [], [view.room]);
+  const showAssistant = guest === null && assistantShown(assistant.view);
+  const shareable = roomId !== null && activeDoc !== null && canShare(actor, guest);
 
   return (
-    <div class={`app${leftOpen ? "" : " no-left"}${rightOpen ? "" : " no-right"}`}>
+    <div class={`app${leftOpen ? "" : " no-left"}${rightOpen ? "" : " no-right"}${showAssistant ? " has-assistant" : ""}`}>
       <header class="topbar">
         <button
           type="button"
@@ -399,6 +508,12 @@ function Workspace({ api, token, actor, switchingToken, onSwitchToken, onSignIn,
           <kbd>{modKey()} K</kbd>
         </button>
         <span class="topbar-spacer" />
+        {shareable ? (
+          <button type="button" class="button button--small" aria-haspopup="dialog" title={`Share ${activeDoc.name} by link`} onClick={() => setSharing(true)}>
+            <Icon name="link" size={14} />
+            Share
+          </button>
+        ) : null}
         {roomId ? <ConnectionDot status={room.status} /> : null}
         <button
           type="button"
@@ -409,16 +524,17 @@ function Workspace({ api, token, actor, switchingToken, onSwitchToken, onSignIn,
         >
           <Icon name={theme === "dark" ? "sun" : "moon"} />
         </button>
-        <span class="me" title={shareMode ? "Shared snapshot: no engine is loaded" : engine === undefined ? undefined : `Engine: ${describeEngine(engine)}`}>
-          <ActorBadge actor={actor} />
-          <span class={`role role--${actor.kind}`}>{actor.kind === "agent" ? "Agent" : "User"}</span>
-        </span>
-        <button type="button" class="button button--small button--quiet" onClick={() => onSwitchToken(true)}>
-          Switch token
-        </button>
-        <button type="button" class="button button--small button--quiet" onClick={onSignOut}>
-          Sign out
-        </button>
+        <SessionControls
+          actor={actor}
+          account={account}
+          guest={guest !== null}
+          title={shareMode ? "Shared snapshot: no engine is loaded" : engine === undefined ? undefined : `Engine: ${describeEngine(engine)}`}
+          onSwitchToken={onSwitchToken ? () => onSwitchToken(true) : undefined}
+          accountPage={accountPage}
+          plansPage={plansPage}
+          onSignOut={() => void signOut()}
+          signingOut={signingOut}
+        />
         <button
           type="button"
           class="icon-button"
@@ -444,6 +560,7 @@ function Workspace({ api, token, actor, switchingToken, onSwitchToken, onSignIn,
           pack={pack}
           packBusy={packBusy}
           uploading={uploading}
+          guest={guest !== null}
           onSelectRoom={selectRoom}
           onCreateRoom={createRoom}
           onSelectDoc={selectDoc}
@@ -466,6 +583,7 @@ function Workspace({ api, token, actor, switchingToken, onSwitchToken, onSignIn,
           proposal={reviewing}
           proposalIds={proposalIds}
           activity={view.activity}
+          guest={guest !== null}
           engine={engine ?? null}
           shareMode={shareMode}
           theme={theme}
@@ -481,6 +599,18 @@ function Workspace({ api, token, actor, switchingToken, onSwitchToken, onSignIn,
           notify={notify}
         />
       )}
+      {guest === null ? (
+        <AssistantPanel
+          view={assistant.view}
+          docName={activeDoc?.name ?? null}
+          selection={selection}
+          proposals={view.room?.proposals ?? []}
+          shareMode={shareMode}
+          onAsk={assistant.ask}
+          onCancel={assistant.cancel}
+          onInspect={inspect}
+        />
+      ) : null}
       {rightOpen ? (
         <RightRail
           tab={tab}
@@ -502,6 +632,7 @@ function Workspace({ api, token, actor, switchingToken, onSwitchToken, onSignIn,
           history={history_}
           activity={view.activity}
           shareMode={shareMode}
+          guest={guest !== null}
         />
       ) : null}
       {switcher ? (
@@ -515,7 +646,10 @@ function Workspace({ api, token, actor, switchingToken, onSwitchToken, onSignIn,
           }}
         />
       ) : null}
-      {switchingToken ? <SignIn error={signInError} busy={checking} onSubmit={onSignIn} onCancel={() => onSwitchToken(false)} /> : null}
+      {sharing && shareable ? (
+        <ShareDialog api={api} roomId={roomId} docName={activeDoc.name} hosted={account !== null} onClose={() => setSharing(false)} />
+      ) : null}
+      {switchingToken && onSwitchToken ? <SignIn error={signInError} busy={checking} onSubmit={onSignIn} onCancel={() => onSwitchToken(false)} /> : null}
       <Toasts toasts={toasts} dismiss={(id) => setToasts((current) => current.filter((t) => t.id !== id))} />
     </div>
   );

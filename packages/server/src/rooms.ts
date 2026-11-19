@@ -33,7 +33,7 @@ import {
 } from "@wolfsdk/protocol/workspace";
 import { BlobStore } from "./blobs.ts";
 import type { DocumentEngine, ReplayResult } from "./engine.ts";
-import { EngineFault, EngineRefusal } from "./errors.ts";
+import { EngineFault, EngineRefusal, PLAN_SEAT_LIMIT, PLAN_WORKSPACE_LIMIT, readOnlyFailure } from "./errors.ts";
 import { KeyedLock } from "./lock.ts";
 import type {
   ActivityReport,
@@ -43,12 +43,18 @@ import type {
   DocumentRead,
   EditOutcome,
   EditRequest,
+  PlanCap,
+  PlanLimitReason,
   PreviewRead,
+  ReadOnlyMode,
+  ReadOnlyReason,
   Result,
   RoomFailure,
   RoomListener,
   RoomService,
   RoomSubscription,
+  ShareLink,
+  ShareLinks,
 } from "./service.ts";
 import { claimDatabase, type RoomRow, RoomStore, type SeatRow } from "./store.ts";
 
@@ -82,11 +88,42 @@ export type RoomServerOptions = {
    * no seat of its own, and about once a minute for one that does; an agent that took a seat of its own and is
    * later given an operator gives that seat up the next time the server asks. */
   operatorOf?: (agent: RoomActor) => { id: string; name: string } | null | Promise<{ id: string; name: string } | null>;
+  /** A cap that the plan of the customer puts on the licence. The server admits the smaller of the licence limit and
+   * the plan limit; a licence limit that is the smaller stays a licence refusal, and one the plan caused is refused with
+   * the `plan-seat-limit` or `plan-workspace-limit` reason, a message that names the limit, who or what would be one more
+   * and `upgrade`. A seat held when the cap is lowered follows the rule of the licence: the newest seats are freed.
+   * The cap is fixed for the life of the server: a new plan takes effect when the server is started again. Absent: only
+   * the licence limits. */
+  planCap?: PlanCap;
+  /** Whether an identity is seatless: it never takes a seat, counts toward no cap and is never refused because a cap
+   * is reached. An agent whose operator (per `operatorOf`) is seatless takes none either. A seat the identity held
+   * before it became seatless is freed the next time it makes a request. Asked on every request of the identity.
+   * Absent: nobody is seatless. */
+  seatless?: (actor: RoomActor) => boolean | Promise<boolean>;
+  /** Serve reads and refuse every write, with the words that say why and what to do about it: `reason` (a sentence)
+   * and `upgrade` (the way out, a URL for instance). A write (a workspace or document created, an edit or a
+   * proposal, a decision, a comment, an agent's activity report) is refused with a `LICENSE_LIMIT` whose reason is
+   * `workspace-read-only` and whose message starts with it and ends with `reason` and `upgrade` verbatim. The check
+   * comes before every other: the request is not validated, authorised or given a seat. Joining a room, reading a
+   * room, a document or a preview, and listing keep working (a join still takes a seat, under the same limits).
+   * `seedRoom` still creates a room: it is for the host, not a client. The mode is fixed for the life of the
+   * server: leaving it takes a server started without it. Absent: writes are served. */
+  readOnly?: ReadOnlyMode;
 };
 
 type Failure = { ok: false; error: RoomFailure };
 type SeqEvent = Exclude<RoomServerEvent, { type: "error" }>;
-type Verdict = { proposal: RoomProposal; status: "superseded" | "conflicted" };
+/** What landing a batch does to another open proposal of the document: the proposal as it is after, and for one an
+ * approval closes, the note that tells its author why (a comment thread anchored at `proposal:<id>`). */
+type Verdict = { proposal: RoomProposal; note: { author: RoomActor; body: string } | null };
+
+/** What `RoomServer.edit` answers: an `EditOutcome` whose proposal also says whether it already existed. A proposal
+ * whose document, base revision and ops equal those of one already open (a pack refreshed twice, an agent repeating
+ * its edit) opens nothing new: the answer is the open proposal, with `existed: true`. A proposal this edit opened
+ * has `existed: false`. */
+export type RoomEditOutcome =
+  | Extract<EditOutcome, { mode: "commit" }>
+  | (Extract<EditOutcome, { mode: "propose" }> & { existed: boolean });
 
 const ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const FORMATS: readonly string[] = ["docx", "xlsx", "pptx", "pdf"] satisfies WorkspaceDocFormat[];
@@ -102,12 +139,53 @@ const OPERATOR_RECHECK_MS = 60_000;
 const LICENCE_RECHECK_MS = 60_000;
 
 /** A subscription and the identity that joined. */
-type Subscriber = { listener: RoomListener; kind: SeatRow["kind"]; id: string; name: string };
+type Subscriber = { listener: RoomListener; kind: SeatRow["kind"]; id: string; name: string; seatless: boolean };
 
 /** A limit of the licence: a whole number, or `null` for no limit. */
 const isLimit = (value: unknown): value is number | null => value === null || (typeof value === "number" && Number.isInteger(value) && value >= 0);
 
-const failure = (code: Exclude<RoomFailure["code"], "REVISION_MISMATCH">, message: string): Failure => ({ ok: false, error: { code, message } });
+/** The limits a server admits under: each is the smaller of the licence and the plan, and `byPlan` says that the plan is
+ * the smaller (a licence limit that is equal or smaller is the licence's). */
+type Limits = { maxSeats: number | null; seatsByPlan: boolean; maxWorkspaces: number | null; workspacesByPlan: boolean };
+
+/** The smaller of a licence limit and a plan limit (`null`: no limit). */
+function smaller(licence: number | null, plan: number | null): { max: number | null; byPlan: boolean } {
+  return plan !== null && (licence === null || plan < licence) ? { max: plan, byPlan: true } : { max: licence, byPlan: false };
+}
+
+const NAME_CHARS = 64;
+const UPGRADE_CHARS = 300;
+
+/** A plan cap that is a bug of the host when it is wrong: refused at construction, never at the first request. */
+function checkedCap(cap: PlanCap): Required<PlanCap> {
+  if (!isLimit(cap.maxSeats) || !isLimit(cap.maxWorkspaces)) throw new Error("planCap: maxSeats and maxWorkspaces are whole numbers, or null for no limit");
+  const name = cap.name ?? "current";
+  if (name.length === 0 || name.length > NAME_CHARS) throw new Error(`planCap: name is 1 to ${NAME_CHARS} characters`);
+  if (cap.upgrade.length === 0 || cap.upgrade.length > UPGRADE_CHARS) throw new Error(`planCap: upgrade is 1 to ${UPGRADE_CHARS} characters`);
+  return { maxSeats: cap.maxSeats, maxWorkspaces: cap.maxWorkspaces, name, upgrade: cap.upgrade };
+}
+
+const READ_ONLY_CHARS = 300;
+
+/** A read-only mode that is a bug of the host when it is wrong: refused at construction, never at the first request. */
+function checkedReadOnly(mode: ReadOnlyMode): ReadOnlyMode {
+  for (const field of ["reason", "upgrade"] as const) {
+    const text = mode[field];
+    if (typeof text !== "string" || text.trim().length === 0 || text.length > READ_ONLY_CHARS) {
+      throw new Error(`readOnly: ${field} is 1 to ${READ_ONLY_CHARS} characters and not blank`);
+    }
+  }
+  return { reason: mode.reason, upgrade: mode.upgrade };
+}
+
+const failure = (
+  code: Exclude<RoomFailure["code"], "REVISION_MISMATCH">,
+  message: string,
+  reason?: PlanLimitReason | ReadOnlyReason,
+): Failure => ({
+  ok: false,
+  error: reason === undefined ? { code, message } : { code, message, reason },
+});
 const ok = <T>(value: T): Result<T> => ({ ok: true, value });
 
 function badRequest(problems: readonly string[]): Failure {
@@ -149,7 +227,7 @@ class Tx {
   }
 }
 
-export class RoomServer implements RoomService {
+export class RoomServer implements RoomService, ShareLinks {
   private readonly store: RoomStore;
   private readonly blobs: BlobStore;
   private readonly engine: DocumentEngine;
@@ -170,11 +248,16 @@ export class RoomServer implements RoomService {
   private readonly operators = new Map<string, string>();
   /** When the licence was last read, on the wall clock: the room clock stamps events and need not move. */
   private licenceReadAt: number | null = null;
+  private readonly planCap: Required<PlanCap> | null;
+  private readonly seatlessOf: RoomServerOptions["seatless"];
+  private readonly readOnly: ReadOnlyMode | null;
   private readonly unlock: () => void;
 
   /** Opens the database and checks every stored room: a server never starts on state that would not pass
    * `validateRoomSnapshot`, and never on a database another server has open. */
   constructor(options: RoomServerOptions) {
+    // Checked before the database is claimed: a mode that is a mistake of the host must not leave the file locked.
+    const readOnly = options.readOnly === undefined ? null : checkedReadOnly(options.readOnly);
     this.unlock = claimDatabase(options.dbPath);
     try {
       this.store = new RoomStore(options.dbPath);
@@ -192,6 +275,9 @@ export class RoomServer implements RoomService {
     this.locale = options.locale ?? "en-US";
     this.seed = options.seed ?? randomSeed;
     this.operatorOf = options.operatorOf;
+    this.planCap = options.planCap === undefined ? null : checkedCap(options.planCap);
+    this.seatlessOf = options.seatless;
+    this.readOnly = readOnly;
     try {
       for (const row of this.store.rooms()) this.snapshotOf(row.room_id);
     } catch (e) {
@@ -225,9 +311,30 @@ export class RoomServer implements RoomService {
     return freed;
   }
 
+  /** The refusal of a write when the workspace is read-only, else `null`. Every write asks it first, before it
+   * validates, authorises or seats anything: the answer to a write in a read-only workspace does not depend on the
+   * request. */
+  private readOnlyRefusal(): Failure | null {
+    if (this.readOnly === null) return null;
+    return { ok: false, error: readOnlyFailure(this.readOnly) };
+  }
+
   // Rooms ------------------------------------------------------------------------------------------------
 
   createRoom(actor: RoomActor, input: { room_id: string; workspace_id: string }): Promise<Result<RoomState>> {
+    const readOnly = this.readOnlyRefusal();
+    if (readOnly !== null) return Promise.resolve(readOnly);
+    return this.makeRoom(actor, input);
+  }
+
+  /** Create a room for the host, at its start: a room the host puts in place before it serves, which is not a write
+   * of a client, so a read-only workspace creates it too. It is not on `RoomService`, so nothing a client reaches
+   * can call it. The licence, the plan cap and `authorize` apply as for `createRoom`. */
+  seedRoom(actor: RoomActor, input: { room_id: string; workspace_id: string }): Promise<Result<RoomState>> {
+    return this.makeRoom(actor, input);
+  }
+
+  private makeRoom(actor: RoomActor, input: { room_id: string; workspace_id: string }): Promise<Result<RoomState>> {
     const { room_id: roomId, workspace_id: workspaceId } = input;
     if (!ID.test(roomId)) return Promise.resolve(badRequest([`room_id ${JSON.stringify(roomId)} is not a valid id`]));
     if (!ID.test(workspaceId)) return Promise.resolve(badRequest([`workspace_id ${JSON.stringify(workspaceId)} is not a valid id`]));
@@ -237,12 +344,23 @@ export class RoomServer implements RoomService {
       if (this.store.room(roomId) !== null) return failure("BAD_REQUEST", `room ${roomId} exists`);
       const limits = await this.limits();
       if (!limits.ok) return limits;
-      const max = limits.value.max_workspaces;
+      const { maxWorkspaces: max, workspacesByPlan } = limits.value;
       if (max !== null && !this.store.hasWorkspace(workspaceId) && this.store.workspaceCount() >= max) {
-        return failure("LICENSE_LIMIT", `this licence serves ${max} workspace${max === 1 ? "" : "s"}; ${workspaceId} would be one more`);
+        const plural = `${max} workspace${max === 1 ? "" : "s"}`;
+        if (workspacesByPlan && this.planCap !== null) {
+          return failure(
+            "LICENSE_LIMIT",
+            `${PLAN_WORKSPACE_LIMIT}: the ${this.planCap.name} plan serves ${plural}; ${workspaceId} would be one more. ${this.planCap.upgrade}`,
+            PLAN_WORKSPACE_LIMIT,
+          );
+        }
+        return failure("LICENSE_LIMIT", `this licence serves ${plural}; ${workspaceId} would be one more`);
       }
-      const seat = await this.admitSeat(await this.seatHolder(actor), actor);
-      if (seat) return seat;
+      const holder = await this.seatHolder(actor);
+      if (!(await this.seatless(actor, holder))) {
+        const seat = await this.admitSeat(holder, actor);
+        if (seat) return seat;
+      }
       this.store.transaction(() => {
         this.store.insertRoom(roomId, workspaceId, this.stamp());
         this.snapshotOf(roomId);
@@ -259,6 +377,37 @@ export class RoomServer implements RoomService {
     return this.guarded(actor, "read", roomId, () => ok(this.snapshotOf(roomId)));
   }
 
+  // Share links ------------------------------------------------------------------------------------------
+
+  shareOf(roomId: string, docName: string): ShareLink | null {
+    return this.store.shareOf(roomId, docName);
+  }
+
+  /** Nothing here awaits, so the link a document has and the link made for it are never read apart: two callers
+   * that share one document together get the same link. */
+  share(roomId: string, docName: string, by: RoomActor): Promise<Result<{ link: ShareLink; existed: boolean }>> {
+    const readOnly = this.readOnlyRefusal();
+    if (readOnly !== null) return Promise.resolve(readOnly);
+    const problem = this.actorProblem(by);
+    if (problem) return Promise.resolve(problem);
+    if (this.store.room(roomId) === null) return Promise.resolve(failure("UNKNOWN_ROOM", `no room ${roomId}`));
+    if (this.store.document(roomId, docName) === null) return Promise.resolve(failure("UNKNOWN_DOCUMENT", `no document ${docName} in ${roomId}`));
+    const live = this.store.shareOf(roomId, docName);
+    if (live !== null) return Promise.resolve(ok({ link: live, existed: true }));
+    const token = Buffer.from(crypto.getRandomValues(new Uint8Array(32))).toString("base64url");
+    const link: ShareLink = { token, room_id: roomId, doc_name: docName, created_by: by, created_at: this.stamp() };
+    this.store.addShare(link);
+    return Promise.resolve(ok({ link, existed: false }));
+  }
+
+  unshare(roomId: string, docName: string): boolean {
+    return this.store.removeShare(roomId, docName);
+  }
+
+  resolveShare(token: string): ShareLink | null {
+    return this.store.shareByToken(token);
+  }
+
   // Documents --------------------------------------------------------------------------------------------
 
   addDocument(
@@ -266,6 +415,8 @@ export class RoomServer implements RoomService {
     actor: RoomActor,
     input: { name: string; format: WorkspaceDocFormat; bytes: Uint8Array },
   ): Promise<Result<RoomHead>> {
+    const readOnly = this.readOnlyRefusal();
+    if (readOnly !== null) return Promise.resolve(readOnly);
     const { name, format, bytes } = input;
     if (name.length === 0) return Promise.resolve(badRequest(["a document needs a name"]));
     if (!FORMATS.includes(format)) return Promise.resolve(badRequest([`${JSON.stringify(format)} is not a document format`]));
@@ -311,11 +462,13 @@ export class RoomServer implements RoomService {
 
   // Edits ------------------------------------------------------------------------------------------------
 
-  edit(roomId: string, actor: RoomActor, request: EditRequest): Promise<Result<EditOutcome>> {
+  edit(roomId: string, actor: RoomActor, request: EditRequest): Promise<Result<RoomEditOutcome>> {
+    const readOnly = this.readOnlyRefusal();
+    if (readOnly !== null) return Promise.resolve(readOnly);
     const problems = validateRoomClientMessage({ type: "doc.edit", request_id: "service", ...request });
     if (problems.length > 0) return Promise.resolve(badRequest(problems));
     return this.guarded(actor, "edit", roomId, () =>
-      this.locks.run(docKey(roomId, request.doc_name), async (): Promise<Result<EditOutcome>> => {
+      this.locks.run(docKey(roomId, request.doc_name), async (): Promise<Result<RoomEditOutcome>> => {
         const document = this.store.document(roomId, request.doc_name);
         if (document === null) return failure("UNKNOWN_DOCUMENT", `no document ${request.doc_name} in ${roomId}`);
         if (document.head.format === "pdf") return failure("BAD_REQUEST", `${request.doc_name} is a PDF; PDF documents are read-only`);
@@ -340,13 +493,13 @@ export class RoomServer implements RoomService {
   }
 
   /** Apply `batch` to the head and record it. The caller holds the document lock. */
-  private async commit(roomId: string, actor: RoomActor, document: RoomDocument, requested: RoomBatch): Promise<Result<EditOutcome>> {
+  private async commit(roomId: string, actor: RoomActor, document: RoomDocument, requested: RoomBatch): Promise<Result<RoomEditOutcome>> {
     const { head } = document;
     const batch = this.pin(requested);
     const replay = await this.replayOnHead(head, [batch], true);
     if (!replay.ok) return replay;
     await this.blobs.put(replay.value.bytes);
-    const verdicts = await this.reevaluate(roomId, head, replay.value.bytes, null);
+    const verdicts = await this.reevaluate(roomId, head, replay.value.bytes);
     const result = this.mutate(roomId, (tx) =>
       this.landCommits(tx, roomId, document, replay.value, [batch], actor, null, verdicts),
     );
@@ -355,9 +508,16 @@ export class RoomServer implements RoomService {
     return ok({ mode: "commit", head: result.head, entry });
   }
 
-  /** Hold `batch` as an open proposal against the head, with the bytes it would produce as its preview. */
-  private async propose(roomId: string, actor: RoomActor, document: RoomDocument, requested: RoomBatch): Promise<Result<EditOutcome>> {
+  /** Hold `batch` as an open proposal against the head, with the bytes it would produce as its preview. When a
+   * proposal of the document is already open on the head with the same ops (whoever wrote it, whatever its label
+   * and pins), that proposal is the answer, with `existed: true`: no engine work, nothing stored or announced. The
+   * caller holds the document lock, so two equal proposals racing open one. */
+  private async propose(roomId: string, actor: RoomActor, document: RoomDocument, requested: RoomBatch): Promise<Result<RoomEditOutcome>> {
     const { head } = document;
+    const open = this.store
+      .openProposals(roomId, head.name)
+      .find((proposal) => proposal.base_revision === head.revision && proposal.batches.length === 1 && sameJson(proposal.batches[0]?.ops, requested.ops));
+    if (open !== undefined) return ok({ mode: "propose", proposal: open, existed: true });
     const batch = this.pin(requested);
     const replay = await this.replayOnHead(head, [batch], false);
     if (!replay.ok) return replay;
@@ -376,7 +536,7 @@ export class RoomServer implements RoomService {
       this.store.insertProposal(roomId, proposal);
       tx.send({ type: "proposal.updated", seq: tx.next(), proposal });
     });
-    return ok({ mode: "propose", proposal });
+    return ok({ mode: "propose", proposal, existed: false });
   }
 
   /** Replay `batches` on the head bytes, asking for the result bytes (always) and page hashes (when
@@ -395,29 +555,66 @@ export class RoomServer implements RoomService {
     }
   }
 
-  /** Dry-run the open proposals of the document (but `except`) on the bytes the head is about to have, to
+  /** After a direct commit: dry-run the open proposals of the document on the bytes the head is about to have, to
    * tell which could still be applied (`superseded`: the head moved, the proposal is stale) and which no
    * longer can (`conflicted`). Only a refusal that is about the proposal itself proves a conflict. A worker
    * fault, a licence refusal and a refusal that says nothing about the request (a budget, an internal error)
    * prove nothing about it, so they count as `superseded`. */
-  private async reevaluate(roomId: string, head: RoomHead, bytes: Uint8Array, except: string | null): Promise<Verdict[]> {
+  private async reevaluate(roomId: string, head: RoomHead, bytes: Uint8Array): Promise<Verdict[]> {
     const verdicts: Verdict[] = [];
     for (const proposal of this.store.openProposals(roomId, head.name)) {
-      if (proposal.proposal_id === except) continue;
-      let status: Verdict["status"] = "superseded";
+      let status: "superseded" | "conflicted" = "superseded";
       try {
         await this.engine.replay({ format: head.format, name: head.name, bytes, batches: proposal.batches, save: false, pages: false });
       } catch (e) {
         if (e instanceof EngineRefusal && !e.isLicense && !e.isEngineFailure) status = "conflicted";
         else if (!(e instanceof EngineRefusal || e instanceof EngineFault)) throw e;
       }
-      verdicts.push({ proposal, status });
+      verdicts.push({ proposal: { ...proposal, status }, note: null });
+    }
+    return verdicts;
+  }
+
+  /** After `approved` is approved: settle the other open proposals of the document against the bytes the head is
+   * about to have. A proposal whose op targets overlap the approved batches (`overlapOf`) was written against what
+   * the approval changed: it closes as `superseded`. One whose targets are disjoint is rebased: its pinned batches
+   * are replayed on those bytes, and it stays open on the new revision with the result as its new preview, for the
+   * reviewer to decide. A refusal of that replay that is about the proposal closes it as `conflicted`; a worker
+   * fault, a licence refusal or a refusal that says nothing about the request leaves no preview to show, so it
+   * closes as `superseded`. Every closed proposal gets a note from `approver` that names the approved proposal, and
+   * for a failed rebase carries the engine's message. */
+  private async settleSiblings(roomId: string, head: RoomHead, bytes: Uint8Array, approved: RoomProposal, approver: RoomActor): Promise<Verdict[]> {
+    const touched = targetsOf(approved.batches);
+    const revision = head.revision + approved.batches.length;
+    const by = `proposal ${approved.proposal_id}, which ${approver.name} approved`;
+    const verdicts: Verdict[] = [];
+    for (const proposal of this.store.openProposals(roomId, head.name)) {
+      if (proposal.proposal_id === approved.proposal_id) continue;
+      const overlap = overlapOf(touched, targetsOf(proposal.batches));
+      if (overlap !== null) {
+        verdicts.push({ proposal: { ...proposal, status: "superseded" }, note: { author: approver, body: `Superseded by ${by}: ${overlap}.` } });
+        continue;
+      }
+      try {
+        const rebased = savedReplay(
+          await this.engine.replay({ format: head.format, name: head.name, bytes, batches: proposal.batches, save: true, pages: false }),
+          proposal.batches.length,
+        );
+        const preview = await this.blobs.put(rebased.bytes);
+        verdicts.push({ proposal: { ...proposal, base_revision: revision, preview_sha256: preview }, note: null });
+      } catch (e) {
+        if (!(e instanceof EngineRefusal || e instanceof EngineFault)) throw e;
+        const status = e instanceof EngineRefusal && !e.isLicense && !e.isEngineFailure ? "conflicted" : "superseded";
+        const body = `Could not be rebased on revision ${revision} after ${by}: ${e.message}`.slice(0, MESSAGE_CHARS);
+        verdicts.push({ proposal: { ...proposal, status }, note: { author: approver, body } });
+      }
     }
     return verdicts;
   }
 
   /** Inside a transaction: write the session entries of `batches` (one `doc.committed` each, with the approval
-   * that let them in, if there was one), the new head and its page changes, and move the `verdicts` proposals. */
+   * that let them in, if there was one), the new head and its page changes, and the `verdicts` proposals, each
+   * followed by the thread of its note, if it has one. */
   private landCommits(
     tx: Tx,
     roomId: string,
@@ -466,10 +663,20 @@ export class RoomServer implements RoomService {
         removed,
       });
     }
-    for (const verdict of verdicts) {
-      const proposal: RoomProposal = { ...verdict.proposal, status: verdict.status };
+    for (const { proposal, note } of verdicts) {
       this.store.saveProposal(roomId, proposal);
       tx.send({ type: "proposal.updated", seq: tx.next(), proposal });
+      if (note === null) continue;
+      const thread: RoomThread = {
+        thread_id: this.newId(),
+        doc_name: proposal.doc_name,
+        target_address: `proposal:${proposal.proposal_id}`,
+        mentions: [{ kind: proposal.author.kind, id: proposal.author.id }],
+        messages: [{ message_id: this.newId(), author: note.author, body: note.body, created_at: at }],
+        resolved: false,
+      };
+      this.store.insertThread(roomId, thread);
+      tx.send({ type: "comment.updated", seq: tx.next(), thread });
     }
     return { entries, head };
   }
@@ -477,6 +684,8 @@ export class RoomServer implements RoomService {
   // Proposals --------------------------------------------------------------------------------------------
 
   decideProposal(roomId: string, actor: RoomActor, request: DecideRequest): Promise<Result<DecideOutcome>> {
+    const readOnly = this.readOnlyRefusal();
+    if (readOnly !== null) return Promise.resolve(readOnly);
     const problems = validateRoomClientMessage({ type: "proposal.decide", request_id: "service", ...request });
     if (problems.length > 0) return Promise.resolve(badRequest(problems));
     // A proposal is decided by a person. This is not the `authorize` hook's to give away: an agent that could
@@ -517,7 +726,8 @@ export class RoomServer implements RoomService {
    * must reproduce the preview the approver was shown: a replay that does not is `ENGINE_FAILED` and commits
    * nothing. A batch the engine refuses because of the batch means the proposal no longer applies: it becomes
    * `conflicted`. A refusal of the licence, or one that says nothing about the request (a budget, an internal
-   * error), leaves the proposal open. */
+   * error), leaves the proposal open. The other open proposals of the document are settled by `settleSiblings`
+   * in the same transaction. */
   private async approve(roomId: string, proposalId: string, approver: RoomActor): Promise<Result<DecideOutcome>> {
     const open = this.openProposal(roomId, proposalId);
     if ("ok" in open) return open;
@@ -545,7 +755,7 @@ export class RoomServer implements RoomService {
       return failure("ENGINE_FAILED", `replaying proposal ${proposalId} gives ${final ?? "no document"}, not the preview ${proposal.preview_sha256}; nothing was committed`);
     }
     await this.blobs.put(replay.bytes);
-    const verdicts = await this.reevaluate(roomId, head, replay.bytes, proposalId);
+    const verdicts = await this.settleSiblings(roomId, head, replay.bytes, proposal, approver);
     const approved: RoomProposal = { ...proposal, status: "approved" };
     const landed = this.mutate(roomId, (tx) => {
       this.store.saveProposal(roomId, approved);
@@ -558,6 +768,8 @@ export class RoomServer implements RoomService {
   // Comments and activity --------------------------------------------------------------------------------
 
   postComment(roomId: string, actor: RoomActor, request: CommentRequest): Promise<Result<RoomThread>> {
+    const readOnly = this.readOnlyRefusal();
+    if (readOnly !== null) return Promise.resolve(readOnly);
     const problems = validateRoomClientMessage({ type: "comment.post", request_id: "service", ...request });
     if (problems.length > 0) return Promise.resolve(badRequest(problems));
     return this.guarded(actor, "comment", roomId, () => {
@@ -594,6 +806,8 @@ export class RoomServer implements RoomService {
   }
 
   reportActivity(roomId: string, agent: RoomActor, report: ActivityReport): Promise<Result<void>> {
+    const readOnly = this.readOnlyRefusal();
+    if (readOnly !== null) return Promise.resolve(readOnly);
     if (agent.kind !== "agent") return Promise.resolve(failure("FORBIDDEN", "only an agent reports agent activity"));
     return this.guarded(agent, "activity", roomId, () => {
       if (report.doc_name !== null && this.store.document(roomId, report.doc_name) === null) {
@@ -620,7 +834,7 @@ export class RoomServer implements RoomService {
   join(roomId: string, actor: RoomActor, sinceSeq: number | null, listener: RoomListener): Promise<Result<RoomSubscription>> {
     const problems = validateRoomClientMessage({ type: "room.join", request_id: "service", room_id: roomId, since_seq: sinceSeq });
     if (problems.length > 0) return Promise.resolve(badRequest(problems));
-    return this.guarded(actor, "join", roomId, () => {
+    return this.guarded(actor, "join", roomId, (seatless) => {
       // Nothing below awaits: the backlog and the registration happen between two events, never across one.
       // A stored room that cannot produce its backlog is damaged: that is thrown to the caller, not hidden
       // behind a subscription that never delivers anything.
@@ -637,7 +851,7 @@ export class RoomServer implements RoomService {
         this.listeners.set(roomId, subscribers);
       }
       const registered = subscribers;
-      const subscriber: Subscriber = { listener, kind: actor.kind, id: actor.id, name: actor.name };
+      const subscriber: Subscriber = { listener, kind: actor.kind, id: actor.id, name: actor.name, seatless };
       registered.add(subscriber);
       return ok({
         unsubscribe() {
@@ -695,6 +909,7 @@ export class RoomServer implements RoomService {
   /** Whether the identity of a subscription still has a seat: its own, or for an agent that acted on its
    * operator's seat, that one. An agent that is handing its own seat to its operator has one all the way. */
   private seated(subscriber: Subscriber): boolean {
+    if (subscriber.seatless) return true;
     if (this.store.hasSeat(subscriber.kind, subscriber.id)) return true;
     const operator = subscriber.kind === "agent" ? this.operators.get(subscriber.id) : undefined;
     return operator !== undefined && this.store.hasSeat("user", operator);
@@ -784,10 +999,11 @@ export class RoomServer implements RoomService {
     return null;
   }
 
-  /** The licence the engine runs under, or `LICENSE_LIMIT`: a server that cannot read its licence, or reads limits
-   * that are not whole numbers, admits nobody. A licence that admits fewer seats than are taken frees the newest
-   * ones, so the roster never holds more seats than the last reading of the licence admits. */
-  private async limits(): Promise<Result<ReactorPipeEntitlement>> {
+  /** The limits the server admits under, or `LICENSE_LIMIT`: a server that cannot read its licence, or reads limits
+   * that are not whole numbers, admits nobody. Each limit is the smaller of the licence and the plan cap. A limit that
+   * admits fewer seats than are taken frees the newest ones, so the roster never holds more seats than the last reading
+   * of the licence and the plan admit. */
+  private async limits(): Promise<Result<Limits>> {
     let read: ReactorPipeEntitlement;
     try {
       read = await this.engine.entitlement();
@@ -801,8 +1017,10 @@ export class RoomServer implements RoomService {
       return failure("LICENSE_LIMIT", "the licence could not be read: its limits are not whole numbers");
     }
     this.licenceReadAt = Date.now();
-    if (read.max_seats !== null) this.trimSeats(read.max_seats);
-    return ok(read);
+    const seats = smaller(read.max_seats, this.planCap?.maxSeats ?? null);
+    const workspaces = smaller(read.max_workspaces, this.planCap?.maxWorkspaces ?? null);
+    if (seats.max !== null) this.trimSeats(seats.max);
+    return ok({ maxSeats: seats.max, seatsByPlan: seats.byPlan, maxWorkspaces: workspaces.max, workspacesByPlan: workspaces.byPlan });
   }
 
   /** Free the seats beyond `max`, newest first, and end their subscriptions. An identity that lost its seat takes
@@ -875,9 +1093,17 @@ export class RoomServer implements RoomService {
       // A holder without a seat that still has subscriptions lost its seat in the database, not through
       // `releaseSeat`: they end before it takes a seat again.
       this.endUnseated();
-      const max = limits.value.max_seats;
+      const { maxSeats: max, seatsByPlan } = limits.value;
       if (max !== null && this.store.seatCount() - (vacated ? 1 : 0) >= max) {
-        return failure("LICENSE_LIMIT", `this licence admits ${max} seat${max === 1 ? "" : "s"}; ${holder.name} would take one more`);
+        const plural = `${max} seat${max === 1 ? "" : "s"}`;
+        if (seatsByPlan && this.planCap !== null) {
+          return failure(
+            "LICENSE_LIMIT",
+            `${PLAN_SEAT_LIMIT}: the ${this.planCap.name} plan admits ${plural}; ${holder.name} would take one more. ${this.planCap.upgrade}`,
+            PLAN_SEAT_LIMIT,
+          );
+        }
+        return failure("LICENSE_LIMIT", `this licence admits ${plural}; ${holder.name} would take one more`);
       }
       const at = this.stamp();
       this.store.transaction(() => {
@@ -892,9 +1118,34 @@ export class RoomServer implements RoomService {
     }
   }
 
+  /** Whether `actor` or the identity whose seat it acts on is seatless. Such a caller holds no seat and counts
+   * toward no cap: a seat it held before it became seatless is freed here, and the subscriptions that went by it
+   * end, except those of seatless identities, which never needed one. `holder` is the result of `seatHolder`. */
+  private async seatless(actor: RoomActor, holder: RoomActor): Promise<boolean> {
+    const isSeatless = this.seatlessOf;
+    if (isSeatless === undefined) return false;
+    const own = await isSeatless(actor);
+    const operator = holder === actor ? own : await isSeatless(holder);
+    if (!own && !operator) return false;
+    let freed = false;
+    if (own) {
+      if (actor.kind === "agent") this.standaloneAt.delete(actor.id);
+      freed = this.store.removeSeat(actor.kind, actor.id);
+    }
+    if (operator && holder !== actor) freed = this.store.removeSeat(holder.kind, holder.id) || freed;
+    if (actor.kind === "agent") this.operators.delete(actor.id);
+    if (freed) this.endUnseated();
+    return true;
+  }
+
   /** Run `work` for `actor` in an existing room: the room exists, the actor may act, the licence was read not
-   * long ago, and an identity that takes a seat has one. */
-  private async guarded<T>(actor: RoomActor, action: RoomAction, roomId: string, work: () => Promise<Result<T>> | Result<T>): Promise<Result<T>> {
+   * long ago, and an identity that takes a seat has one. `work` is told whether the caller is seatless. */
+  private async guarded<T>(
+    actor: RoomActor,
+    action: RoomAction,
+    roomId: string,
+    work: (seatless: boolean) => Promise<Result<T>> | Result<T>,
+  ): Promise<Result<T>> {
     if (this.store.room(roomId) === null) return failure("UNKNOWN_ROOM", `no room ${roomId}`);
     const problem = this.actorProblem(actor);
     if (problem) return problem;
@@ -906,12 +1157,13 @@ export class RoomServer implements RoomService {
       if (refused) return refused;
     }
     const holder = await this.seatHolder(actor);
+    if (await this.seatless(actor, holder)) return work(true);
     const vacates = holder !== actor && this.store.hasSeat(actor.kind, actor.id);
     if (vacates || !this.store.hasSeat(holder.kind, holder.id)) {
       const refused = await this.locks.run(ADMIN, () => this.admitSeat(holder, actor));
       if (refused) return refused;
     } else this.follow(actor, holder);
-    return work();
+    return work(false);
   }
 
   /** `guarded`, for a room that does not exist yet: the authorize hook and the licence still apply, and the
@@ -934,4 +1186,76 @@ function savedReplay(replay: ReplayResult, batches: number): ReplayResult & { by
   if (replay.bytes === null) throw new EngineFault("the engine saved no bytes");
   if (replay.steps.length !== batches) throw new EngineFault(`the engine applied ${replay.steps.length} of ${batches} batches`);
   return { ...replay, bytes: replay.bytes };
+}
+
+/** The addresses the ops of `batches` name in `target`, `anchor` and `shapes`, or null when an op names none: such
+ * an op may change anything in the document. */
+function targetsOf(batches: readonly RoomBatch[]): string[] | null {
+  const targets: string[] = [];
+  for (const { ops } of batches) {
+    for (const op of ops) {
+      const named = [op.target, op.anchor, ...(Array.isArray(op.shapes) ? op.shapes : [])].filter(
+        (address): address is string => typeof address === "string" && address !== "",
+      );
+      if (named.length === 0) return null;
+      targets.push(...named);
+    }
+  }
+  return targets;
+}
+
+/** Why a proposal with `theirs` targets overlaps a landed batch with `ours`, or null when the two are disjoint. */
+function overlapOf(ours: readonly string[] | null, theirs: readonly string[] | null): string | null {
+  if (ours === null) return "the approved batches have an op that names no target, so they may change anything";
+  if (theirs === null) return "it has an op that names no target, so it may change anything";
+  for (const address of theirs) {
+    const other = ours.find((landed) => addressesOverlap(landed, address));
+    if (other !== undefined) return other === address ? `both change ${address}` : `${address} overlaps ${other}`;
+  }
+  return null;
+}
+
+/** Grid kinds: a row and a column of one sheet or table cross, and a cell or a range lies in rows and columns. */
+const GRID_KINDS: ReadonlySet<string> = new Set(["cell", "range", "row", "col"]);
+
+/** Whether `a` and `b` can name one node, or one a node inside the other: segment by segment along the shorter
+ * address, each pair of segments can name the same node. */
+function addressesOverlap(a: string, b: string): boolean {
+  const as = a.split("/");
+  const bs = b.split("/");
+  for (let i = 0; i < Math.min(as.length, bs.length); i++) {
+    if (!segmentsOverlap(as[i] ?? "", bs[i] ?? "")) return false;
+  }
+  return true;
+}
+
+/** Whether two address segments (`kind:key`, or a bare `kind`) can name the same node. Kinds compare without case.
+ * Segments of two kinds can only meet on a grid. Of one kind, equal keys name the same node, and a positional key
+ * (`@n`, or an A1 reference of a cell or a range) can name any node of its kind once a batch has inserted or
+ * removed one before it. */
+function segmentsOverlap(a: string, b: string): boolean {
+  const [aKind, aKey] = splitSegment(a);
+  const [bKind, bKey] = splitSegment(b);
+  if (aKind !== bKind) return GRID_KINDS.has(aKind) && GRID_KINDS.has(bKind);
+  const positional = (key: string): boolean => key.startsWith("@") || aKind === "cell" || aKind === "range";
+  return aKey === bKey || positional(aKey) || positional(bKey);
+}
+
+function splitSegment(segment: string): [kind: string, key: string] {
+  const colon = segment.indexOf(":");
+  return colon < 0 ? [segment.toLowerCase(), ""] : [segment.slice(0, colon).toLowerCase(), segment.slice(colon + 1)];
+}
+
+/** Whether two JSON values are equal: equal scalars, arrays of equal items in order, objects with equal members in
+ * any order. A member whose value is `undefined` is absent, as it is once the value is stored as JSON. */
+function sameJson(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  if (typeof a !== "object" || typeof b !== "object" || a === null || b === null) return false;
+  if (Array.isArray(a) || Array.isArray(b)) {
+    return Array.isArray(a) && Array.isArray(b) && a.length === b.length && a.every((item, i) => sameJson(item, b[i]));
+  }
+  const members = (value: object): [string, unknown][] => Object.entries(value).filter(([, member]) => member !== undefined);
+  const ours = members(a);
+  const theirs = new Map(members(b));
+  return ours.length === theirs.size && ours.every(([key, member]) => theirs.has(key) && sameJson(member, theirs.get(key)));
 }

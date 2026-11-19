@@ -2,19 +2,76 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, test } from "bun:test";
-import { type DocumentEngine, RoomServer } from "@wolfsdk/server";
-import { McpServer, blankDocument } from "../src/index.ts";
+import { afterEach, describe, expect, setDefaultTimeout, test } from "bun:test";
+import { validateSchema } from "@wolfsdk/protocol/session";
+import { MCP_WORKSPACE_SCHEMA, type PackManifest, validatePackManifest } from "@wolfsdk/protocol/workspace";
+import { type DocumentEngine, EngineRefusal, RoomServer } from "@wolfsdk/server";
+import { McpServer, blankDocument, type PackRefresher } from "../src/index.ts";
+import { writeZip } from "../src/read/index.ts";
 import type { McpSession } from "../src/server.ts";
-import { BRIEF_LINES, alice, bob, callTool, dataOf, disposeAll, headOf, listen, makeWorkspace, must, onDispose, openSession, robot, steppingClock, toolErrorOf, type Workspace } from "./fixtures/workspace.ts";
+import { BRIEF_LINES, alice, bob, callTool, dataOf, disposeAll, headOf, listen, makeWorkspace, must, onDispose, openSession, request, resultOf, robot, rpcErrorOf, steppingClock, toolErrorOf, type Workspace } from "./fixtures/workspace.ts";
 import { MEMORY_ENTITLEMENT, MemoryEngine, wordDocument } from "./fixtures/memory-engine.ts";
 
+setDefaultTimeout(120_000);
 afterEach(disposeAll);
 
 async function setup(): Promise<{ workspace: Workspace; session: McpSession }> {
   const workspace = await makeWorkspace();
   return { workspace, session: await openSession(workspace.mcp) };
 }
+
+describe("tool argument guidance", () => {
+  test("an undefined argument is refused with the defined arguments for every tool", async () => {
+    const { workspace, session } = await setup();
+    const cases: [string, Record<string, unknown>, string[]][] = [
+      ["workspace_list", {}, ["format", "limit"]],
+      ["doc_read", { doc: "brief.docx" }, ["doc", "view", "target", "max_nodes"]],
+      ["doc_search", { query: "Revenue" }, ["query", "doc", "regex", "limit"]],
+      ["doc_create", { name: "new.docx", format: "docx" }, ["name", "format", "template", "ops"]],
+      ["doc_edit", { doc: "brief.docx", base_revision: 0, mode: "propose", ops: [{ op: "append_paragraph", text: "New" }] }, ["doc", "base_revision", "mode", "ops", "message"]],
+      ["doc_inspect_visual", { doc: "brief.docx" }, ["doc", "pages", "dpi", "preflight", "proposal_id"]],
+      ["pack_link_refresh", { pack: "review" }, ["pack", "bindings", "mode"]],
+      ["comment_reply", { thread_id: "thread", body: "Reply" }, ["thread_id", "body", "resolve"]],
+    ];
+    for (const [name, args, defined] of cases) {
+      const error = rpcErrorOf(await session.handle(request("tools/call", { name, arguments: { ...args, surprise: true } })));
+      expect(error.code).toBe(-32602);
+      const guidance = `$.arguments: unexpected surprise. Defined arguments for ${name}: ${defined.join(", ")}.`;
+      expect(error.data).toMatchObject({ problems: [guidance] });
+      expect(error.message).toContain(guidance);
+    }
+    // The two guessed argument names from the walkthrough, including a call also missing doc.
+    for (const [name, args, defined] of [
+      ["doc_read", { name: "deck.pptx" }, "doc, view, target, max_nodes"],
+      ["doc_inspect_visual", { doc: "deck.pptx", target: "slide:#1" }, "doc, pages, dpi, preflight, proposal_id"],
+    ] as const) {
+      const unknown = name === "doc_read" ? "name" : "target";
+      const error = rpcErrorOf(await session.handle(request("tools/call", { name, arguments: args })));
+      expect(error.code).toBe(-32602);
+      const guidance = `$.arguments: unexpected ${unknown}. Defined arguments for ${name}: ${defined}.`;
+      expect(error.data).toMatchObject({ problems: expect.arrayContaining([guidance]) });
+      expect(error.message).toContain(guidance);
+    }
+    for (const key of ["constructor", "toString", "__proto__"]) {
+      const args = JSON.parse(`{"doc":"brief.docx","${key}":true}`);
+      const error = rpcErrorOf(await session.handle(request("tools/call", { name: "doc_read", arguments: args })));
+      expect(error.code).toBe(-32602);
+      expect(error.message).toContain(`unexpected ${key}. Defined arguments for doc_read: doc, view, target, max_nodes.`);
+    }
+    expect(must(await workspace.room.getRoom("room", alice)).proposals).toEqual([]);
+    expect((await headOf(workspace, "brief.docx")).revision).toBe(0);
+  });
+
+  test("tools/list describes a supported text change for each editable format", async () => {
+    const { session } = await setup();
+    const { tools } = resultOf(await session.handle(request("tools/list"))) as { tools: { name: string; description: string }[] };
+    const description = tools.find((tool) => tool.name === "doc_edit")?.description ?? "";
+    expect(description).toMatch(/DOCX:.*?replace-text.*?set.*?value\.text/);
+    expect(description).toMatch(/PPTX:.*?replace-text.*?set.*?value\.text/);
+    expect(description).toMatch(/XLSX:.*?set.*?value\.string/);
+    expect(description).toContain("PDF is read-only");
+  });
+});
 
 describe("workspace_list", () => {
   test("lists the documents with their heads and what is open on them", async () => {
@@ -75,6 +132,170 @@ describe("workspace_list", () => {
     expect(block?.type).toBe("text");
     expect(JSON.parse((block as { text: string }).text)).toEqual(result.structuredContent);
     expect(result.isError).toBeUndefined();
+  });
+
+  describe("pack bindings, from the pack manifests", () => {
+    const MAIN = "http://schemas.openxmlformats.org/spreadsheetml/2006/main";
+    const REL = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
+    const PKG_REL = "http://schemas.openxmlformats.org/package/2006/relationships";
+    const W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
+    const relsOf = (id: string, type: string, target: string): string =>
+      `<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="${PKG_REL}"><Relationship Id="${id}" Type="${REL}/${type}" Target="${target}"/></Relationships>`;
+    const types = (part: string, type: string): string =>
+      `<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">` +
+      `<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/>` +
+      `<Override PartName="${part}" ContentType="${type}"/></Types>`;
+    const text = (ref: string, value: string): string => `<c r="${ref}" t="inlineStr"><is><t>${value}</t></is></c>`;
+
+    /** fin.xlsx: sheet Fin with the headline revenue in B2 (a formula and its cached value), the workbook-scoped
+     * defined name Headline pointing at it, and a region table in A4:B6. */
+    function finWorkbook(): Uint8Array {
+      const sheet =
+        `<worksheet xmlns="${MAIN}" xmlns:r="${REL}"><sheetData>` +
+        `<row r="1">${text("A1", "Metric")}</row>` +
+        `<row r="2">${text("A2", "Revenue")}<c r="B2"><f>SUM(B5:B6)</f><v>1250000</v></c></row>` +
+        `<row r="4">${text("A4", "Region")}${text("B4", "Revenue")}</row>` +
+        `<row r="5">${text("A5", "West")}<c r="B5"><v>500000</v></c></row>` +
+        `<row r="6">${text("A6", "East")}<c r="B6"><v>750000</v></c></row>` +
+        `</sheetData></worksheet>`;
+      return writeZip([
+        { name: "[Content_Types].xml", data: types("/xl/workbook.xml", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml") },
+        { name: "_rels/.rels", data: relsOf("rId1", "officeDocument", "xl/workbook.xml") },
+        {
+          name: "xl/workbook.xml",
+          data:
+            `<?xml version="1.0" encoding="UTF-8"?><workbook xmlns="${MAIN}" xmlns:r="${REL}"><sheets><sheet name="Fin" sheetId="1" r:id="rId1"/></sheets>` +
+            `<definedNames><definedName name="Headline">Fin!$B$2</definedName></definedNames></workbook>`,
+        },
+        { name: "xl/_rels/workbook.xml.rels", data: relsOf("rId1", "worksheet", "worksheets/sheet1.xml") },
+        { name: "xl/worksheets/sheet1.xml", data: sheet },
+      ]);
+    }
+
+    /** memo.docx: one paragraph inside the bookmark Headline. */
+    function memoDocument(): Uint8Array {
+      const body = `<w:p><w:bookmarkStart w:id="0" w:name="Headline"/><w:r><w:t>Revenue was 1.1m</w:t></w:r><w:bookmarkEnd w:id="0"/></w:p>`;
+      return writeZip([
+        { name: "[Content_Types].xml", data: types("/word/document.xml", "application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml") },
+        { name: "_rels/.rels", data: relsOf("rId1", "officeDocument", "word/document.xml") },
+        { name: "word/document.xml", data: `<?xml version="1.0" encoding="UTF-8"?><w:document xmlns:w="${W}"><w:body>${body}<w:sectPr/></w:body></w:document>` },
+      ]);
+    }
+
+    const determinism = { clock: "2026-11-13T00:00:00Z", seed: 7 };
+    const MANIFEST: PackManifest = {
+      contract: "wolfsdk.pack.v1",
+      pack_id: "board",
+      name: "Board pack",
+      sources: [
+        { id: "fin", kind: "xlsx", doc_name: "fin.xlsx", determinism },
+        { id: "plan", kind: "xlsx", doc_name: "plan.xlsx", determinism },
+      ],
+      bindings: [
+        {
+          id: "headline",
+          source_id: "fin",
+          selector: { type: "defined_name", name: "Headline" },
+          target_doc: "memo.docx",
+          target_format: "docx",
+          target_kind: "docx_bookmark",
+          target_address: "Headline",
+          number_format: null,
+          fit_policy: "none",
+        },
+        {
+          id: "regions",
+          source_id: "fin",
+          selector: { type: "range", sheet: "Fin", ref: "$A$4:$B$6" },
+          target_doc: "memo.docx",
+          target_format: "docx",
+          target_kind: "docx_table",
+          target_address: "table:@1",
+          number_format: null,
+          fit_policy: "grow",
+        },
+        {
+          id: "plan",
+          source_id: "plan",
+          selector: { type: "cell", sheet: "Plan", ref: "C3" },
+          target_doc: "memo.docx",
+          target_format: "docx",
+          target_kind: "docx_bookmark",
+          target_address: "Plan",
+          number_format: "0.0%",
+          fit_policy: "none",
+        },
+      ],
+    };
+
+    async function boardSetup(): Promise<McpSession> {
+      expect(validatePackManifest(MANIFEST)).toEqual([]);
+      const workspace = await makeWorkspace({ packManifests: async () => [MANIFEST] });
+      must(await workspace.room.addDocument("room", alice, { name: "fin.xlsx", format: "xlsx", bytes: finWorkbook() }));
+      must(await workspace.room.addDocument("room", alice, { name: "memo.docx", format: "docx", bytes: memoDocument() }));
+      return openSession(workspace.mcp);
+    }
+
+    test("each binding shows its kind, the cell a defined name resolves to, the value there and its docx target", async () => {
+      const session = await boardSetup();
+      const [pack, ...others] = dataOf(await callTool(session, "workspace_list")).packs as Record<string, unknown>[];
+      expect(others).toEqual([]);
+      expect(pack).toEqual({
+        pack: "board",
+        bindings: ["headline", "regions", "plan"],
+        title: "Board pack",
+        definitions: [
+          {
+            id: "headline",
+            kind: "docx_bookmark",
+            selector: { type: "defined_name", name: "Headline" },
+            source_doc: "fin.xlsx",
+            source_address: "sheet:Fin/cell:B2",
+            source_revision: 0,
+            value: 1250000,
+            target_doc: "memo.docx",
+            target_address: "bookmark:Headline",
+          },
+          {
+            id: "regions",
+            kind: "docx_table",
+            selector: { type: "range", sheet: "Fin", ref: "$A$4:$B$6" },
+            source_doc: "fin.xlsx",
+            source_address: "sheet:Fin/range:A4:B6",
+            source_revision: 0,
+            value: [
+              ["Region", "Revenue"],
+              ["West", 500000],
+              ["East", 750000],
+            ],
+            target_doc: "memo.docx",
+            target_address: "table:@1",
+          },
+          {
+            id: "plan",
+            kind: "docx_bookmark",
+            selector: { type: "cell", sheet: "Plan", ref: "C3" },
+            source_doc: "plan.xlsx",
+            source_address: "sheet:Plan/cell:C3",
+            target_doc: "memo.docx",
+            target_address: "bookmark:Plan",
+            problem: 'the room holds no document "plan.xlsx"',
+          },
+        ],
+      });
+      // The members are the ones the schema documents, and nothing else.
+      expect(validateSchema({ $defs: MCP_WORKSPACE_SCHEMA.$defs, $ref: "#/$defs/workspace_list_pack" }, pack)).toEqual([]);
+    });
+
+    test("the source and target addresses are ones doc_read reads", async () => {
+      const session = await boardSetup();
+      const [pack] = dataOf(await callTool(session, "workspace_list")).packs as { definitions: { source_doc: string; source_address: string; target_doc: string; target_address: string }[] }[];
+      const headline = pack?.definitions[0];
+      const cells = dataOf(await callTool(session, "doc_read", { doc: headline?.source_doc, view: "cells", target: headline?.source_address }));
+      expect(cells.cells).toEqual([{ address: "sheet:#1/cell:B2", value: 1250000, formula: "=SUM(B5:B6)" }]);
+      const target = dataOf(await callTool(session, "doc_read", { doc: headline?.target_doc, target: headline?.target_address }));
+      expect(target.nodes).toContainEqual(expect.objectContaining({ address: "bookmark:Headline", kind: "bookmark", text: "Revenue was 1.1m" }));
+    });
   });
 });
 
@@ -278,6 +499,22 @@ describe("doc_edit", () => {
     expect(proposal).toMatchObject({ proposal_id: data.proposal_id, author: robot, status: "open" });
   });
 
+  test("a repeated propose answers with the proposal already open, says existed, and opens nothing", async () => {
+    const { workspace, session } = await setup();
+    const edit = { doc: "brief.docx", base_revision: 0, mode: "propose", ops: [{ op: "append_paragraph", text: "Decision" }] };
+    const first = dataOf(await callTool(session, "doc_edit", { ...edit, message: "add the decision" }));
+    expect(first).toMatchObject({ mode: "propose", status: "open", existed: false });
+    const events = await listen(workspace);
+    const again = dataOf(await callTool(session, "doc_edit", { ...edit, message: "add the decision again" }));
+    expect(again).toEqual({ ...first, existed: true });
+    expect(events.filter((event) => event.type === "proposal.updated")).toEqual([]);
+    expect(must(await workspace.room.getRoom("room", alice)).proposals.map((proposal): unknown => proposal.proposal_id)).toEqual([first.proposal_id]);
+    // Other ops are new work: a proposal of its own.
+    const other = dataOf(await callTool(session, "doc_edit", { ...edit, ops: [{ op: "append_paragraph", text: "Owner" }] }));
+    expect(other).toMatchObject({ existed: false });
+    expect(other.proposal_id).not.toBe(first.proposal_id);
+  });
+
   test("a person approving the proposal commits it, and the agent then reads the result", async () => {
     const { workspace, session } = await setup();
     const proposed = dataOf(
@@ -312,10 +549,100 @@ describe("doc_edit", () => {
     expect(must(await workspace.room.getRoom("room", alice)).proposals).toEqual([]);
   });
 
+  test("an op name the engine does not know is answered with the ops of the format and the members of each", async () => {
+    const { workspace, session } = await setup();
+    // What the engine answers for an op name it does not know: it names no op.
+    workspace.engine.replay = async () => {
+      throw new EngineRefusal("usage", "options.ops[].op is not a supported Agent API operation", "apply");
+    };
+    for (const guess of ["replace_text", "text.replace", "replaceText", "text_replace"]) {
+      const error = toolErrorOf(await callTool(session, "doc_edit", { doc: "brief.docx", base_revision: 0, mode: "propose", ops: [{ op: guess, target: "para:@1", find: "a", replace: "b" }] }));
+      expect(error.code).toBe("BAD_REQUEST");
+      expect(error.message).toContain(`${JSON.stringify(guess)} (did you mean replace-text?) is not an op of docx`);
+      expect(error.message).toContain("The ops of docx are replace-text, set, splice-text, insert, delete");
+      expect(error.message).toContain("detail.ops of this answer gives the members of each");
+      expect(error.detail).toMatchObject({ reason: "unknown-op", format: "docx", unknown_ops: [guess], did_you_mean: { [guess]: "replace-text" } });
+      expect((error.detail?.ops as Record<string, string>)["replace-text"]).toStartWith("{target, find, replace}");
+    }
+    const sheet = toolErrorOf(await callTool(session, "doc_edit", { doc: "model.xlsx", base_revision: 0, mode: "commit", ops: [{ op: "set_cell", target: "sheet:@1/cell:A1" }] }));
+    expect(sheet.message).toContain('"set_cell" is not an op of xlsx. The ops of xlsx are set, replace-text,');
+    expect(sheet.detail).toMatchObject({ reason: "unknown-op", format: "xlsx", unknown_ops: ["set_cell"] });
+    expect(sheet.detail).not.toHaveProperty("did_you_mean");
+    expect(Object.keys(sheet.detail?.ops as Record<string, string>)).toContain("recalculate");
+    expect(must(await workspace.room.getRoom("room", alice)).proposals).toEqual([]);
+  });
+
+  test("an engine refusal of an op name by its code is answered the same way, and any other refusal as it was", async () => {
+    const { session } = await setup();
+    const unknown = toolErrorOf(await callTool(session, "doc_edit", { doc: "brief.docx", base_revision: 0, mode: "propose", ops: [{ op: "append_paragraph", text: "x" }, { op: "insert_text", text: "y" }] }));
+    expect(unknown.message).toStartWith('apply refused: unknown-op: the op "insert_text" is not known. "append_paragraph", "insert_text" are not ops of docx.');
+    expect(unknown.detail).toMatchObject({ reason: "unknown-op", format: "docx", unknown_ops: ["append_paragraph", "insert_text"] });
+    const absent = toolErrorOf(await callTool(session, "doc_edit", { doc: "brief.docx", base_revision: 0, mode: "propose", ops: [{ op: "replace_text", find: "absent", text: "x" }] }));
+    expect(absent.message).not.toContain("not an op of");
+    expect(absent.detail).toBeUndefined();
+  });
+
   test("an unknown document is UNKNOWN_DOCUMENT", async () => {
     const { session } = await setup();
     const error = toolErrorOf(await callTool(session, "doc_edit", { doc: "missing.docx", base_revision: 0, mode: "commit", ops: [{ op: "append_paragraph", text: "x" }] }));
     expect(error.code).toBe("UNKNOWN_DOCUMENT");
+  });
+});
+
+describe("pack_link_refresh through the room", () => {
+  /** A refresher that, like the linked pack directory, sends one propose batch per binding through the room
+   * service and reports each binding it sent as updated with the proposal the room answered. `revenue` writes the
+   * same paragraph on every refresh; `stamp` writes the refresh number, so every refresh is new work. */
+  function roomRefresher(): PackRefresher {
+    let refreshes = 0;
+    return {
+      async refreshPack(req) {
+        refreshes += 1;
+        const texts: Record<string, string> = { revenue: "Revenue: 12", stamp: `Refresh ${refreshes}` };
+        const bindings = [];
+        for (const binding of req.bindings ?? Object.keys(texts)) {
+          const head = must(await req.roomService.readHead(req.roomId, req.actor, "brief.docx")).head;
+          const batch = { ops: [{ op: "append_paragraph", text: texts[binding] }], label: `refresh ${binding}` };
+          const outcome = must(await req.roomService.edit(req.roomId, req.actor, { doc_name: "brief.docx", base_revision: head.revision, mode: req.mode, batch }));
+          bindings.push(
+            outcome.mode === "propose"
+              ? { binding, status: "updated" as const, doc: "brief.docx", proposal_id: outcome.proposal.proposal_id }
+              : { binding, status: "updated" as const, doc: "brief.docx", revision: outcome.head.revision },
+          );
+        }
+        return { pack: req.pack, mode: req.mode, bindings };
+      },
+    };
+  }
+
+  test("a repeated refresh does not count a binding whose proposal was already open as updated", async () => {
+    const workspace = await makeWorkspace({ packs: roomRefresher() });
+    const session = await openSession(workspace.mcp);
+    const first = dataOf(await callTool(session, "pack_link_refresh", { pack: "kpis" }));
+    expect(first).toMatchObject({ pack: "kpis", mode: "propose", updated: 2, failed: 0 });
+    const opened = first.bindings as { binding: string; proposal_id: string }[];
+    expect(opened.map((binding) => Object.hasOwn(binding, "existed"))).toEqual([false, false]);
+
+    const again = dataOf(await callTool(session, "pack_link_refresh", { pack: "kpis" }));
+    expect(again).toMatchObject({ updated: 1, failed: 0 });
+    const [revenue, stamp] = again.bindings as Record<string, unknown>[];
+    expect(revenue).toEqual({ binding: "revenue", status: "unchanged", doc: "brief.docx", proposal_id: opened[0]?.proposal_id, existed: true });
+    expect(stamp).toMatchObject({ binding: "stamp", status: "updated" });
+    expect(stamp?.proposal_id).not.toBe(opened[1]?.proposal_id);
+    expect(Object.hasOwn(stamp ?? {}, "existed")).toBe(false);
+
+    // The room holds the revenue proposal once.
+    const open = must(await workspace.room.getRoom("room", alice)).proposals.filter((proposal) => proposal.status === "open");
+    expect(open.filter((proposal) => proposal.proposal_id === opened[0]?.proposal_id)).toHaveLength(1);
+    expect(open).toHaveLength(3);
+  });
+
+  test("commit mode counts every binding it wrote as updated", async () => {
+    const workspace = await makeWorkspace({ packs: roomRefresher() });
+    const session = await openSession(workspace.mcp);
+    expect(dataOf(await callTool(session, "pack_link_refresh", { pack: "kpis", mode: "commit", bindings: ["revenue"] }))).toMatchObject({ updated: 1 });
+    expect(dataOf(await callTool(session, "pack_link_refresh", { pack: "kpis", mode: "commit", bindings: ["revenue"] }))).toMatchObject({ updated: 1 });
+    expect(await headOf(workspace, "brief.docx")).toMatchObject({ revision: 2 });
   });
 });
 
@@ -412,6 +739,20 @@ describe("every tool announces itself to the room and then goes idle", () => {
     const events = await listen(workspace);
     await callTool(session, "doc_read", { doc: "brief.docx", target: "para:@99" });
     expect(events.filter((e) => e.type === "agent.activity").map((e) => e.activity)).toEqual(["reading", "idle"]);
+  });
+
+  test("a refused doc_edit leaves no activity that reads as a proposal or a commit", async () => {
+    const { workspace, session } = await setup();
+    const events = await listen(workspace);
+    for (const mode of ["propose", "commit"] as const) {
+      for (const op of [{ op: "replaceText", find: "costs", replace: "x" }, { op: "replace_text", find: "absent", text: "x" }]) {
+        expect(toolErrorOf(await callTool(session, "doc_edit", { doc: "brief.docx", base_revision: 0, mode, ops: [op] })).code).toBe("BAD_REQUEST");
+      }
+    }
+    expect(events.filter((e) => e.type === "agent.activity")).toEqual([]);
+    await callTool(session, "doc_edit", { doc: "brief.docx", base_revision: 0, mode: "propose", ops: [{ op: "append_paragraph", text: "x" }], message: "add x" });
+    const activity = events.filter((e) => e.type === "agent.activity");
+    expect(activity.map((e) => [e.activity, e.detail ?? null])).toEqual([["proposing", "add x"], ["idle", null]]);
   });
 });
 

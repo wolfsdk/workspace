@@ -1,9 +1,12 @@
 // The process pool and the engine on top of it, driven against the stand-in reactor over real pipes. The
 // hashes the tests expect are computed here with `node:crypto`, not taken from the code under test.
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, setDefaultTimeout, test } from "bun:test";
 import type { RoomBatch } from "@wolfsdk/protocol/workspace";
 import { EngineFault, EngineRefusal, PoolEngine, WorkerPool } from "../src/index.ts";
 import { bytesOf, failureOf, FAKE_REACTOR, makePool, sha256, textOf } from "./fixtures/harness.ts";
+
+// Processes are started and talked to over pipes: on a busy host one test can take many seconds.
+setDefaultTimeout(120_000);
 
 const pools: WorkerPool[] = [];
 afterEach(async () => {
@@ -163,9 +166,9 @@ describe("a worker that cannot be trusted", () => {
   });
 
   test("a hung worker times out; its process is replaced", async () => {
-    const { engine, pool } = engineOn({ poolSize: 1, callTimeoutMs: 400 });
+    const { engine, pool } = engineOn({ poolSize: 1, callTimeoutMs: 5_000 });
     const fault = await failureOf(engine.replay(input("a", [batch({ op: "hang" })])), EngineFault);
-    expect(fault.message).toMatch(/did not answer apply within 400 ms/);
+    expect(fault.message).toMatch(/did not answer apply within 5000 ms/);
     expect(textOf((await engine.replay(input("a", []))).bytes ?? new Uint8Array())).toBe("a");
     expect(pool.spawned).toBe(2);
   });

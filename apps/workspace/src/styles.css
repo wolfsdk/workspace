@@ -62,6 +62,7 @@
 
   --rail-left: 272px;
   --rail-right: 352px;
+  --rail-assistant: 320px;
   --topbar-h: 48px;
 
   color-scheme: light;
@@ -186,6 +187,27 @@ kbd {
 
 .app.no-left.no-right {
   grid-template-columns: 0 minmax(0, 1fr) 0;
+}
+
+/* With an assistant on the server, its panel takes a column between the document and the right rail. */
+.app.has-assistant {
+  grid-template-columns: var(--rail-left) minmax(0, 1fr) var(--rail-assistant) var(--rail-right);
+  grid-template-areas:
+    "top top top top"
+    "notice notice notice notice"
+    "left stage assistant right";
+}
+
+.app.has-assistant.no-left {
+  grid-template-columns: 0 minmax(0, 1fr) var(--rail-assistant) var(--rail-right);
+}
+
+.app.has-assistant.no-right {
+  grid-template-columns: var(--rail-left) minmax(0, 1fr) var(--rail-assistant) 0;
+}
+
+.app.has-assistant.no-left.no-right {
+  grid-template-columns: 0 minmax(0, 1fr) var(--rail-assistant) 0;
 }
 
 .topbar {
@@ -314,6 +336,11 @@ kbd {
   background: var(--we-moved-bg);
 }
 
+.role--guest {
+  color: var(--we-warning);
+  background: var(--we-warning-bg);
+}
+
 /* ---- Controls ---------------------------------------------------------- */
 
 .button {
@@ -330,6 +357,8 @@ kbd {
   font-weight: 550;
   white-space: nowrap;
   cursor: pointer;
+  /* A link styled as a button (the top bar's "Connect an agent" and "Plan") carries no underline. */
+  text-decoration: none;
   transition:
     background var(--we-duration) var(--we-ease),
     border-color var(--we-duration) var(--we-ease);
@@ -839,6 +868,11 @@ textarea.input {
   border-left: 1px solid var(--we-border);
 }
 
+.rail--assistant {
+  grid-area: assistant;
+  border-left: 1px solid var(--we-border);
+}
+
 .no-left .rail--left,
 .no-right .rail--right {
   display: none;
@@ -1270,6 +1304,146 @@ textarea.input {
   color: var(--we-muted);
 }
 
+/* ---- Assistant --------------------------------------------------------- */
+
+.assistant-meter {
+  font-size: var(--we-text-xs);
+  color: var(--we-muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.assistant-model {
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--we-font-mono);
+  font-size: var(--we-text-xs);
+  color: var(--we-muted);
+}
+
+.assistant-log {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--we-space-4);
+}
+
+.assistant-turns {
+  display: grid;
+  gap: var(--we-space-5);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.assistant-turn {
+  display: grid;
+  gap: var(--we-space-3);
+  min-width: 0;
+}
+
+.assistant-request {
+  justify-self: end;
+  max-width: 92%;
+  padding: var(--we-space-3) var(--we-space-4);
+  border-radius: var(--we-radius-lg);
+  background: var(--we-selected);
+}
+
+.assistant-request-text,
+.assistant-answer {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.assistant-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--we-space-3);
+  margin: var(--we-space-2) 0 0;
+  font-size: var(--we-text-xs);
+  color: var(--we-muted);
+  overflow-wrap: anywhere;
+}
+
+.assistant-meta .time {
+  font-size: inherit;
+}
+
+.assistant-steps {
+  display: grid;
+  gap: var(--we-space-2);
+  margin: 0;
+  padding: 0 0 0 var(--we-space-4);
+  border-left: 2px solid var(--we-divider);
+  list-style: none;
+  font-size: var(--we-text-sm);
+}
+
+.assistant-step {
+  display: grid;
+  gap: var(--we-space-1);
+  min-width: 0;
+}
+
+.assistant-step-head {
+  display: flex;
+  align-items: center;
+  gap: var(--we-space-3);
+  min-width: 0;
+}
+
+.assistant-step-doc {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--we-fg-2);
+}
+
+.assistant-step-head .status {
+  margin-left: auto;
+}
+
+.assistant-step-summary {
+  color: var(--we-muted);
+  overflow-wrap: anywhere;
+}
+
+.assistant-outcome {
+  display: flex;
+  margin: 0;
+}
+
+.assistant-failure {
+  margin: 0;
+  color: var(--we-danger);
+  font-size: var(--we-text-sm);
+  overflow-wrap: anywhere;
+}
+
+.assistant-foot {
+  display: grid;
+  gap: var(--we-space-3);
+  border-top: 1px solid var(--we-divider);
+  border-bottom: 0;
+}
+
+.assistant-exhausted .time {
+  color: inherit;
+  font-size: inherit;
+}
+
+.assistant-context {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--we-space-2);
+  min-width: 0;
+}
+
 /* ---- Stage ------------------------------------------------------------- */
 
 .stage {
@@ -1504,6 +1678,161 @@ textarea.input {
   gap: var(--we-space-2);
 }
 
+/* The Share dialog: the link with Copy, the agent prompt, Stop sharing, and the guests behind a hosting front. */
+
+.share-dialog {
+  width: min(480px, calc(100% - 32px));
+  max-height: calc(88vh - 32px);
+  overflow-y: auto;
+}
+
+.share-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--we-space-3);
+}
+
+.share-doc {
+  overflow-wrap: anywhere;
+}
+
+.share-link {
+  display: flex;
+  gap: var(--we-space-2);
+}
+
+.share-link .input {
+  flex: 1;
+  min-width: 0;
+}
+
+.share-dialog .field .hint {
+  margin: 0;
+}
+
+.share-prompt-button {
+  justify-self: start;
+}
+
+.share-confirm {
+  flex-wrap: wrap;
+}
+
+.share-guests {
+  padding-top: var(--we-space-4);
+  border-top: 1px solid var(--we-divider);
+}
+
+.share-guest-list {
+  display: grid;
+  gap: var(--we-space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.share-guest {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--we-space-3);
+  padding: var(--we-space-3);
+  border: 1px solid var(--we-border);
+  border-radius: var(--we-radius);
+  background: var(--we-bg);
+}
+
+.share-guest-who {
+  display: grid;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.share-guest-email {
+  color: var(--we-muted);
+  font-size: var(--we-text-sm);
+}
+
+/* The page of a share link: no rails and no room, the painted pages, and the agent prompt beside them (above them on
+ * a phone, where the whole page scrolls). */
+
+.shared-page {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.shared-topbar {
+  flex: none;
+  height: var(--topbar-h);
+}
+
+.shared-empty {
+  flex: 1;
+  display: grid;
+  place-items: center;
+  padding: var(--we-space-6);
+}
+
+.shared-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+
+.shared-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.shared-main .stage {
+  flex: 1;
+}
+
+.shared-byline {
+  margin: 0;
+  padding: var(--we-space-3) var(--we-space-4) 0;
+  background: var(--we-bg);
+  color: var(--we-muted);
+  font-size: var(--we-text-sm);
+}
+
+.shared-byline strong {
+  color: var(--we-fg);
+}
+
+.shared-agent {
+  flex: none;
+  display: grid;
+  align-content: start;
+  gap: var(--we-space-4);
+  width: var(--rail-assistant);
+  padding: var(--we-space-5);
+  border-left: 1px solid var(--we-border);
+  background: var(--we-bg);
+  overflow-y: auto;
+}
+
+.shared-agent-title {
+  margin: 0;
+  font-size: var(--we-text-lg);
+}
+
+.shared-prompt {
+  font-size: var(--we-text-sm);
+  overflow-wrap: anywhere;
+  resize: none;
+}
+
+/* The painter sizes each canvas to the page at 96 dpi inline; on a narrow screen the page shrinks to fit instead. */
+.shared-page .snapshot-page {
+  max-width: 100%;
+  height: auto !important;
+}
+
 .switcher {
   width: min(560px, calc(100% - 32px));
   border: 1px solid var(--we-border);
@@ -1611,10 +1940,20 @@ textarea.input {
   border-left-color: var(--we-danger);
 }
 
+/* With the assistant beside it, the document keeps a toolbar's width on a laptop window: the rails give way. */
+@media (min-width: 1101px) and (max-width: 1500px) {
+  .app.has-assistant {
+    --rail-left: 232px;
+    --rail-right: 300px;
+    --rail-assistant: 288px;
+  }
+}
+
 @media (max-width: 1100px) {
   :root {
     --rail-left: 232px;
     --rail-right: 300px;
+    --rail-assistant: 280px;
   }
 
   .search-button {
@@ -1624,5 +1963,34 @@ textarea.input {
   .search-button span,
   .crumbs {
     display: none;
+  }
+}
+
+@media (max-width: 720px) {
+  .shared-page {
+    height: auto;
+    min-height: 100%;
+  }
+
+  .shared-body {
+    flex-direction: column;
+  }
+
+  .shared-agent {
+    order: -1;
+    width: auto;
+    padding: var(--we-space-4);
+    border-left: 0;
+    border-bottom: 1px solid var(--we-border);
+  }
+
+  .shared-main .stage-canvas.snapshot-pages {
+    overflow: visible;
+    padding: var(--we-space-3);
+  }
+
+  .shared-page .banner-meta {
+    flex-wrap: wrap;
+    gap: var(--we-space-1) var(--we-space-3);
   }
 }

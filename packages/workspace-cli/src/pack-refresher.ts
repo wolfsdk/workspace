@@ -45,6 +45,21 @@ function outcomes(manifest: PackManifest, refreshed: RoomRefreshReport): PackBin
   });
 }
 
+/** The manifest of the pack directory `dir`, as the `packManifests` of the MCP tools: `workspace_list` describes
+ * each binding of the linked pack from it, read on every call. Nothing while the manifest cannot be read, as
+ * `listPacks` of `directoryPackRefresher`; `pack_link_refresh` says why. */
+export function directoryPackManifests(dir: string): () => Promise<PackManifest[]> {
+  const store = new DirectoryStore(dir);
+  return async () => {
+    try {
+      return [await loadPack(store)];
+    } catch (e) {
+      if (e instanceof PackError) return [];
+      throw e;
+    }
+  };
+}
+
 /** A `PackRefresher` over the pack directory `options.dir`. */
 export function directoryPackRefresher(options: DirectoryPackRefresherOptions): PackRefresher {
   const store = new DirectoryStore(options.dir);
