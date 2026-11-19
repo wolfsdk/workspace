@@ -1611,6 +1611,192 @@ textarea.input {
   box-shadow: var(--we-shadow-2);
 }
 
+/* Live cells: a window of one sheet read and written cell by cell, with the other members on their cells. */
+
+.banner--live {
+  background: var(--we-bg);
+}
+
+.live-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--we-space-2);
+  padding: var(--we-space-2) var(--we-space-4);
+  background: var(--we-bg);
+  border-bottom: 1px solid var(--we-border);
+}
+
+.live-sheet {
+  flex: none;
+  width: 180px;
+}
+
+.live-sheet select {
+  height: var(--we-control-h-sm);
+  font-size: var(--we-text-sm);
+}
+
+.live-address {
+  flex: none;
+  width: 84px;
+}
+
+.live-input {
+  flex: 1;
+  min-width: 0;
+  height: var(--we-control-h-sm);
+}
+
+.live-input[readonly] {
+  background: var(--we-surface);
+  color: var(--we-muted);
+  cursor: not-allowed;
+}
+
+.live-pager {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--we-space-1);
+  flex: none;
+}
+
+.live-range {
+  margin-right: var(--we-space-2);
+  font-family: var(--we-font-mono);
+  font-size: var(--we-text-xs);
+  color: var(--we-muted);
+}
+
+.live-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: var(--we-space-4);
+}
+
+.live-grid {
+  display: grid;
+  grid-template-columns: 44px repeat(8, minmax(96px, 1fr));
+  grid-auto-rows: 26px;
+  min-width: max-content;
+  background: var(--we-bg);
+  border: 1px solid var(--we-border);
+  border-radius: var(--we-radius-sm);
+  font-size: var(--we-text-md);
+  font-variant-numeric: tabular-nums;
+}
+
+.live-grid.is-loading {
+  opacity: 0.6;
+  transition: opacity var(--we-duration) var(--we-ease);
+}
+
+.live-row {
+  display: contents;
+}
+
+.live-head {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--we-surface);
+  border-right: 1px solid var(--we-divider);
+  border-bottom: 1px solid var(--we-divider);
+  color: var(--we-muted);
+  font-size: var(--we-text-xs);
+  font-weight: 600;
+  user-select: none;
+}
+
+.live-head.is-current {
+  background: var(--we-accent-soft);
+  color: var(--we-accent);
+}
+
+.live-cell {
+  position: relative;
+  min-width: 0;
+  padding: 0 var(--we-space-3);
+  overflow: hidden;
+  border-right: 1px solid var(--we-divider);
+  border-bottom: 1px solid var(--we-divider);
+  line-height: 25px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  cursor: cell;
+}
+
+.live-cell:focus {
+  outline: none;
+}
+
+.live-cell.is-number {
+  text-align: right;
+}
+
+.live-cell.is-locked {
+  background: var(--we-surface);
+  color: var(--we-muted);
+}
+
+.live-cell.is-dirty {
+  background: var(--we-warning-bg);
+  color: var(--we-warning);
+}
+
+.live-cell.is-saving {
+  opacity: 0.7;
+}
+
+.live-cell.is-conflict,
+.live-cell.is-error {
+  background: var(--we-danger-bg);
+  color: var(--we-danger);
+}
+
+.live-cell.is-selected {
+  z-index: 1;
+  box-shadow: inset 0 0 0 2px var(--we-accent);
+}
+
+.live-cell.is-selected:focus-visible {
+  box-shadow: inset 0 0 0 2px var(--we-focus), 0 0 0 2px var(--we-accent-soft);
+}
+
+/* Another member's cell: a frame in their hue over the cell, their name on its corner. */
+.live-peer {
+  position: relative;
+  z-index: 2;
+  box-shadow: inset 0 0 0 2px hsl(var(--peer-hue) 65% 45%);
+  pointer-events: none;
+}
+
+.live-peer-name {
+  position: absolute;
+  top: 0;
+  right: 0;
+  max-width: 100%;
+  padding: 0 var(--we-space-2);
+  overflow: hidden;
+  border-bottom-left-radius: var(--we-radius-sm);
+  background: hsl(var(--peer-hue) 65% 45%);
+  color: #ffffff;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 14px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.live-peer-dot {
+  width: 8px;
+  height: 8px;
+  flex: none;
+  align-self: center;
+  border-radius: 50%;
+  background: hsl(var(--peer-hue) 65% 45%);
+}
+
 /* ---- Sheets, switcher, toasts ------------------------------------------ */
 
 .gate {

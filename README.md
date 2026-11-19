@@ -18,6 +18,14 @@ docker compose logs workspace     # prints the address to sign in at
 
 Open the printed address, create a room, and drop a DOCX, XLSX or PPTX file into it.
 
+### Live Excel cells (source build)
+
+Open the same `.xlsx` as two workspace members and choose **Live cells** to see each other's selections. On an approved workbook, enter a value or formula and press Enter to save it. Two people can save changes to different cells from the same workbook revision. If they edit the same cell, the second person keeps their draft and chooses which value to use. Formulas are saved as whole expressions.
+
+**Uploaded workbooks are read-only in Live cells by default.** Wolf 0.2.25 does not report sheet protection or every special formula type. An operator can review a workbook for unprotected, ordinary scalar cells and formulas, then start `serve` with `--live-cells-attest <sha256>` for those exact bytes. Do not approve a workbook based just on its name or who uploaded it. See the [two-browser check](CONTRIBUTING.md#two-browser-excel-check) for a reviewed sample. The pinned container image below predates this feature.
+
+Use numbers, text, booleans, blank cells, or arithmetic formulas such as `=B3*2`. For new formulas, use numbers and same-sheet cell references; functions, ranges, and cross-sheet references are outside this first editing mode. After a server restart or an edit made outside Live cells, the current workbook may need operator review again.
+
 ## What is open source and what is not
 
 Wolf Workspace is not open source as a whole. The code in this repository is open source. The Wolf

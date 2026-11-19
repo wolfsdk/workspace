@@ -170,3 +170,6 @@ export function downloadBytes(name: string, bytes: Uint8Array, type = "applicati
 
 /** `Cmd` on a Mac, `Ctrl` elsewhere. */
 export const modKey = (): string => (/Mac|iPhone|iPad/.test(navigator.platform) ? "Cmd" : "Ctrl");
+
+/** `1 change`, `2 changes`. */
+export const plural = (n: number, one: string, many: string): string => `${n} ${n === 1 ? one : many}`;
