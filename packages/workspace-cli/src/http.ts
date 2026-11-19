@@ -257,7 +257,7 @@ async function boundedText(request: Request, limit: number): Promise<string | nu
     }
     chunks.push(value);
   }
-  return new Blob(chunks as BlobPart[]).text();
+  return new TextDecoder().decode(Buffer.concat(chunks, size));
 }
 
 /** `name` for a `Content-Disposition` header, safe for any file name. */
