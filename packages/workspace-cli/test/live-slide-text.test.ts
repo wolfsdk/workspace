@@ -415,6 +415,81 @@ describe("writing a run", () => {
   });
 });
 
+/** Native ids are unsigned 32-bit numbers, up to ten digits: a deck whose slide and shape numbers are the largest and some
+ * near them, and numbers one past what a deck can hold. */
+const WIDE: Deck = {
+  slides: [
+    {
+      id: 4294967295,
+      shapes: [
+        { id: 4294967295, name: "Largest", paragraphs: [{ runs: [{ text: "Bold ", bold: true }, { text: "ordinary" }] }] },
+        { id: 1234567890, name: "Ten digits", paragraphs: [{ runs: [{ text: "Ten digits" }] }] },
+        { id: 4294967296, name: "Past the largest", paragraphs: [{ runs: [{ text: "not listed" }] }] },
+        { id: 9999999999, name: "Past the largest by far", paragraphs: [{ runs: [{ text: "not listed" }] }] },
+      ],
+    },
+    { id: 4294967296, shapes: [{ id: 2, name: "Slide past the largest", paragraphs: [{ runs: [{ text: "not listed" }] }] }] },
+    { id: 256, shapes: [{ id: 3, name: "Ordinary", paragraphs: [{ runs: [{ text: "Ordinary" }] }] }] },
+  ],
+};
+const WIDE_DOC = "wide.pptx";
+const WIDE_PATH = `/api/rooms/r1/docs/${WIDE_DOC}/live-slide-text`;
+const LARGEST = "slide:#4294967295/shape:#4294967295";
+const TEN = "slide:#4294967295/shape:#1234567890";
+const idsOf = (body: { shapes: { id: string }[] }): string[] => body.shapes.map((shape) => shape.id);
+
+describe("native ids of ten digits", () => {
+  beforeEach(async () => {
+    expect((await room.addDocument("r1", ADA, { name: WIDE_DOC, format: "pptx", bytes: deckBytes(WIDE) })).ok).toBe(true);
+    await server.stop();
+    await start({}, [deckSha256(WIDE)]);
+  });
+
+  test("a listed shape whose ids have ten digits is selected, and an ordinary run of it is edited", async () => {
+    const listed = await read("", "t-ada", WIDE_PATH);
+    expect(listed.status).toBe(200);
+    expect(idsOf(listed.body)).toContain(TEN);
+    expect(listed.body.editable).toBe(true);
+    const selected = await read(`?shape=${encodeURIComponent(TEN)}`, "t-ada", WIDE_PATH);
+    expect([selected.status, selected.body.shape]).toEqual([200, TEN]);
+    expect(selected.body.runs).toEqual([{ id: `${TEN}/para:@1/run:@1`, text: "Ten digits" }]);
+    const wrote = await send({ revision: 0, target: `${TEN}/para:@1/run:@1`, expected: "Ten digits", text: "Ten digits, edited" }, "t-ada", WIDE_PATH);
+    expect([wrote.status, wrote.body]).toEqual([200, { revision: 1 }]);
+    const again = await read(`?shape=${encodeURIComponent(TEN)}`, "t-lin", WIDE_PATH);
+    expect([again.body.revision, texts(again.body)]).toEqual([1, ["Ten digits, edited"]]);
+    const log = await sessionLog();
+    expect(log).toHaveLength(1);
+    expect(log[0]!.batch.ops).toEqual([{ op: "set", target: `${TEN}/para:@1/run:@1`, value: { text: "Ten digits, edited" } }]);
+  });
+
+  test("4294967295 is an id and 4294967296 is not: the list offers what a request takes, and a request past the largest is refused", async () => {
+    const listed = await read("", "t-ada", WIDE_PATH);
+    // Nothing under a number past the largest is listed, as a shape or on a slide.
+    expect(idsOf(listed.body)).toEqual([LARGEST, TEN, "slide:#256/shape:#3"]);
+    for (const shape of idsOf(listed.body)) {
+      expect([shape, (await read(`?shape=${encodeURIComponent(shape)}`, "t-ada", WIDE_PATH)).status]).toEqual([shape, 200]);
+    }
+    const largest = await read(`?shape=${encodeURIComponent(LARGEST)}`, "t-ada", WIDE_PATH);
+    expect(texts(largest.body)).toEqual(["Bold ", "ordinary"]);
+    const refused = [
+      "slide:#4294967296/shape:#2",
+      "slide:#4294967295/shape:#4294967296",
+      "slide:#4294967295/shape:#9999999999",
+      "slide:#10000000000/shape:#2",
+      "slide:#256/shape:#10000000000",
+    ];
+    for (const shape of refused) {
+      const bad = await read(`?shape=${encodeURIComponent(shape)}`, "t-ada", WIDE_PATH);
+      expect([shape, bad.status, bad.body.error.code]).toEqual([shape, 400, "BAD_REQUEST"]);
+      const refusedWrite = await send({ revision: 0, target: `${shape}/para:@1/run:@1`, expected: "not listed", text: "West" }, "t-ada", WIDE_PATH);
+      expect([shape, refusedWrite.status, refusedWrite.body.error.code]).toEqual([shape, 400, "BAD_REQUEST"]);
+    }
+    expect((await read("", "t-ada", WIDE_PATH)).body.revision).toBe(0);
+    const wrote = await send({ revision: 0, target: `${LARGEST}/para:@1/run:@2`, expected: "ordinary", text: "extraordinary" }, "t-ada", WIDE_PATH);
+    expect([wrote.status, wrote.body]).toEqual([200, { revision: 1 }]);
+  });
+});
+
 describe("two members writing", () => {
   test("different runs of one shape from the same revision both land, and each keeps its formatting", async () => {
     expect((await write(0, NORTH, "North", "West", "t-ada")).body).toEqual({ revision: 1 });

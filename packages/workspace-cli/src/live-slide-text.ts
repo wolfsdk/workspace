@@ -81,8 +81,30 @@ const INHERITED_CAP = 1024;
 const NOT_PPTX = "live slide text is for PPTX documents";
 const HISTORY_CHANGED = "the deck changed in ways other than the writes of single runs since your read: read it again";
 
-const SHAPE_ID = /^slide:#[1-9][0-9]{0,8}\/shape:#[1-9][0-9]{0,8}$/;
-const RUN_ID = /^slide:#[1-9][0-9]{0,8}\/shape:#[1-9][0-9]{0,8}\/para:@[1-9][0-9]{0,5}\/run:@[1-9][0-9]{0,5}$/;
+// A slide number (`p:sldId/@id`) and a shape number (`p:cNvPr/@id`) are unsigned 32-bit values, and the view names a slide
+// and a shape by that number as it is in the file: 1 to 4294967295, up to ten digits. The list of shapes and the checks of
+// a request share this one definition, so that the list never offers an id a request refuses. The position of a paragraph
+// and of a run is counted from 1 by the view, and the view is cut at MAX_DECK_NODES, so six digits hold every position.
+const NATIVE_ID_MAX = 4_294_967_295;
+const NATIVE_ID = "([1-9][0-9]{0,9})";
+const SLIDE_ID = new RegExp(`^slide:#${NATIVE_ID}$`);
+const SHAPE_ID = new RegExp(`^slide:#${NATIVE_ID}/shape:#${NATIVE_ID}$`);
+const RUN_ID = new RegExp(`^slide:#${NATIVE_ID}/shape:#${NATIVE_ID}/para:@[1-9][0-9]{0,5}/run:@[1-9][0-9]{0,5}$`);
+const SHAPE_PART = new RegExp(`^(slide:#${NATIVE_ID})/shape:#${NATIVE_ID}(?:/(.+))?$`);
+
+/** Whether the digits of an id, which the patterns above have already shown to be one to ten digits without a leading
+ * zero, are no more than the largest native id. */
+const inRange = (digits: string | undefined): boolean => Number(digits) <= NATIVE_ID_MAX;
+/** Whether `id` is the id of a shape (`slide:#256/shape:#2`) with native slide and shape numbers. */
+const isShapeId = (id: string): boolean => {
+  const match = SHAPE_ID.exec(id);
+  return match !== null && inRange(match[1]) && inRange(match[2]);
+};
+/** Whether `id` is the id of a run (`slide:#256/shape:#2/para:@1/run:@1`) of a shape with native numbers. */
+const isRunId = (id: string): boolean => {
+  const match = RUN_ID.exec(id);
+  return match !== null && inRange(match[1]) && inRange(match[2]);
+};
 
 // --- text --------------------------------------------------------------------------------------------------------
 
@@ -107,8 +129,6 @@ type Deck = { shapes: Shape[]; texts: Map<string, string> };
 /** A deck, or the reason it is read as a whole and not listed. */
 type Observed = Deck | string;
 
-const SLIDE = /^slide:#[1-9][0-9]*$/;
-const SHAPE_PART = /^(slide:#[1-9][0-9]*)\/shape:#[1-9][0-9]*(?:\/(.+))?$/;
 const PARAGRAPH = /^para:@([1-9][0-9]*)$/;
 const RUN = /^para:@([1-9][0-9]*)\/run:@([1-9][0-9]*)$/;
 
@@ -152,16 +172,18 @@ function deckOf(view: unknown): Observed {
   const drafts = new Map<string, Draft>();
   for (const node of view.nodes) {
     if (!isObject(node) || typeof node.id !== "string" || typeof node.kind !== "string") throw new EngineFault("the engine described a part of the deck without an id and a kind");
-    if (SLIDE.test(node.id)) {
-      if (node.kind === "slide") {
+    const slideId = SLIDE_ID.exec(node.id);
+    if (slideId !== null) {
+      // A number a deck cannot hold is not a slide: nothing under it is listed.
+      if (node.kind === "slide" && inRange(slideId[1])) {
         if (slides.has(node.id)) return `the deck names the slide ${node.id} twice`;
         slides.set(node.id, slides.size + 1);
       }
       continue;
     }
     const part = SHAPE_PART.exec(node.id);
-    if (part === null) continue;
-    const rest = part[2];
+    if (part === null || !inRange(part[2]) || !inRange(part[3])) continue;
+    const rest = part[4];
     const shapeId = rest === undefined ? node.id : node.id.slice(0, node.id.length - rest.length - 1);
     let draft = drafts.get(shapeId);
     if (draft === undefined) {
@@ -211,7 +233,7 @@ function deckOf(view: unknown): Observed {
 function runsWritten(entry: RoomSessionEntry): string[] | null {
   const written: string[] = [];
   for (const op of entry.batch.ops) {
-    if (op.op !== "set" || typeof op.target !== "string" || !RUN_ID.test(op.target)) return null;
+    if (op.op !== "set" || typeof op.target !== "string" || !isRunId(op.target)) return null;
     if (Object.keys(op).some((key) => key !== "op" && key !== "target" && key !== "value")) return null;
     const { value } = op;
     if (!isObject(value) || Object.keys(value).length !== 1 || typeof value.text !== "string") return null;
@@ -249,7 +271,7 @@ export class LiveSlideText {
 
   async get(caller: LiveCaller, query: URLSearchParams): Promise<LiveReply> {
     const asked = query.get("shape");
-    if (asked !== null && !SHAPE_ID.test(asked)) return bad("shape is the id of a shape, such as slide:#256/shape:#2");
+    if (asked !== null && !isShapeId(asked)) return bad("shape is the id of a shape, such as slide:#256/shape:#2");
     const read = await this.#service.readHead(caller.roomId, caller.actor, caller.doc);
     if (!read.ok) return { failure: read.error };
     const { head, bytes } = read.value;
@@ -357,7 +379,7 @@ export class LiveSlideText {
     for (const key of Object.keys(body)) if (!Object.hasOwn(WRITE_KEYS, key)) return bad(`${JSON.stringify(key)} is not a member of a write`);
     const { revision, target, expected, text } = body;
     if (typeof revision !== "number" || !Number.isSafeInteger(revision) || revision < 0) return bad("revision is the revision of the read, from 0");
-    if (typeof target !== "string" || !RUN_ID.test(target)) return bad("target is the id of a run of a shape, such as slide:#256/shape:#2/para:@1/run:@1");
+    if (typeof target !== "string" || !isRunId(target)) return bad("target is the id of a run of a shape, such as slide:#256/shape:#2/para:@1/run:@1");
     if (typeof expected !== "string" || typeof text !== "string") return bad("a write has expected and text: the run as read, and the run as it is to be, both text");
     const problem = expected.length > MAX_RUN_TEXT ? `expected is at most ${MAX_RUN_TEXT} characters` : text === "" ? "a run keeps its text: write at least one character" : textProblem(text);
     if (problem !== null) return bad(problem);
