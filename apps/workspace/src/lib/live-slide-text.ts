@@ -109,6 +109,9 @@ export class LiveSlideTextModel {
   /** Reads are numbered; an answer older than one already shown is dropped. */
   #issued = 0;
   #applied = 0;
+  /** The newest revision a save of this page was acknowledged at. A read that began before that save can still answer
+   * with the text from before it, after the draft has moved on to the acknowledged revision. */
+  #acknowledged = 0;
   #reading = 0;
   /** Reads in a row the server did not answer: the poll waits longer after each. */
   #failures = 0;
@@ -155,7 +158,9 @@ export class LiveSlideTextModel {
     try {
       const read = await this.#api.liveSlideText(this.#roomId, this.#doc, asked);
       const now = this.#state;
-      if (token < this.#applied || now.shape !== asked || (now.revision !== null && read.revision < now.revision)) return;
+      // A read of a revision before what the page shows, or before the revision a save of this page was acknowledged at,
+      // began before that and carries text since replaced: it is not news of the deck.
+      if (token < this.#applied || now.shape !== asked || read.revision < Math.max(now.revision ?? 0, this.#acknowledged)) return;
       this.#applied = token;
       this.#failures = 0;
       const wasOffline = now.offline;
@@ -273,6 +278,7 @@ export class LiveSlideTextModel {
       }
       return;
     }
+    this.#acknowledged = Math.max(this.#acknowledged, revision);
     this.#set({ offline: false });
     // What the person typed on while it was sent stays a draft, a new one over the text that landed.
     if (this.#state.drafts[key]?.text !== text) {
