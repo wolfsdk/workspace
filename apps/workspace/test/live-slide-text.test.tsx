@@ -64,6 +64,7 @@ function server() {
   const decks: Record<string, Deck> = { "deck.pptx": mixedDeck() };
   const net = { down: false };
   const seen: Seen[] = [];
+  const holds: { reach: () => void; gate: Promise<void> }[] = [];
   const fetch = async (input: string, init?: RequestInit): Promise<Response> => {
     const method = init?.method ?? "GET";
     const body: unknown = typeof init?.body === "string" ? JSON.parse(init.body) : undefined;
@@ -98,7 +99,7 @@ function server() {
     if (asked !== null && shape === undefined) {
       return jsonResponse(404, { error: { code: "UNKNOWN_SHAPE", message: `There is no shape ${asked}.`, revision: deck.revision } });
     }
-    return jsonResponse(200, {
+    const reply = jsonResponse(200, {
       revision: deck.revision,
       shapes: deck.shapes.map(({ id, label }) => ({ id, label })),
       shape: shape?.id ?? null,
@@ -106,6 +107,12 @@ function server() {
       editable: deck.editable,
       refusal: deck.refusal,
     });
+    const held = holds.shift();
+    if (held !== undefined) {
+      held.reach();
+      await held.gate;
+    }
+    return reply;
   };
   return {
     decks,
@@ -116,6 +123,14 @@ function server() {
     writes: (): LiveSlideRunWrite[] => seen.filter((s) => s.method === "PUT").map((s) => s.body as LiveSlideRunWrite),
     /** The text of each run of the title box of a deck. */
     title: (name = "deck.pptx"): string[] => decks[name]!.shapes[0]!.runs.map((r) => r.text),
+    /** The next read of a deck takes the deck as it is when it is asked and answers only once `release` is called;
+     * `reached` settles when the read has been asked. Reads queue: each call holds the next read not held yet. */
+    holdRead: (): { reached: Promise<void>; release: () => void } => {
+      const reached = Promise.withResolvers<void>();
+      const gate = Promise.withResolvers<void>();
+      holds.push({ reach: reached.resolve, gate: gate.promise });
+      return { reached: reached.promise, release: gate.resolve };
+    },
   };
 }
 
@@ -435,6 +450,58 @@ describe("live slide text", () => {
     await sent;
     expect(fake.writes()).toEqual([{ revision: 4, target: NORTH, expected: "North", text: "West" }]);
     expect(model.state.drafts[K_NORTH]).toMatchObject({ status: "editing", text: "Western", expected: "West", revision: 5 });
+  });
+
+  test("a read begun before a save and answered after it does not turn the next edit into a conflict", async () => {
+    const { fake, model } = await opened();
+    const before = fake.holdRead();
+    const after = fake.holdRead();
+    model.edit(NORTH, "West");
+    // The first read takes the deck at revision 4 and waits; the save lands as revision 5 while it does.
+    const early = model.refresh();
+    const sent = model.submit(K_NORTH);
+    model.edit(NORTH, "Western");
+    // The read after the save has been asked for, so the save was answered and the draft is over what landed.
+    await after.reached;
+    expect(model.state.drafts[K_NORTH]).toMatchObject({ status: "editing", text: "Western", expected: "West", revision: 5 });
+    // The earlier read answers now, with the text from before the save.
+    before.release();
+    await early;
+    expect(model.state.drafts[K_NORTH]).toMatchObject({ status: "editing", text: "Western", expected: "West", revision: 5, conflict: null });
+    expect(model.state.revision).toBe(4);
+    after.release();
+    await sent;
+    expect(model.state.revision).toBe(5);
+    expect(model.state.drafts[K_NORTH]).toMatchObject({ status: "editing", text: "Western", expected: "West", revision: 5, conflict: null });
+    // The next edit is an ordinary draft, and it lands over the text of the save.
+    model.edit(NORTH, "Westerner");
+    expect(model.state.drafts[K_NORTH]).toMatchObject({ status: "editing", text: "Westerner", conflict: null });
+    await model.submit(K_NORTH);
+    expect(fake.writes()).toEqual([
+      { revision: 4, target: NORTH, expected: "North", text: "West" },
+      { revision: 5, target: NORTH, expected: "West", text: "Westerner" },
+    ]);
+    expect(fake.title()).toEqual(["Westerner", "South"]);
+    expect(model.state.drafts).toEqual({});
+  });
+
+  test("a read of a revision newer than the save, with the run written by someone else, is still a conflict", async () => {
+    const { fake, model } = await opened();
+    model.edit(NORTH, "West");
+    const sent = model.submit(K_NORTH);
+    model.edit(NORTH, "Western");
+    await sent;
+    expect(model.state.drafts[K_NORTH]).toMatchObject({ status: "editing", text: "Western", expected: "West", revision: 5, conflict: null });
+    writtenElsewhere(fake, NORTH, "Nord");
+    await model.refresh();
+    expect(model.state.revision).toBe(6);
+    expect(model.state.drafts[K_NORTH]).toMatchObject({
+      status: "conflict",
+      text: "Western",
+      conflict: { code: "RUN_CONFLICT", local: true, current: "Nord", at: 6 },
+    });
+    await model.submit(K_NORTH);
+    expect(fake.writes()).toEqual([{ revision: 4, target: NORTH, expected: "North", text: "West" }]);
   });
 
   test("another shape keeps its own drafts, and an answer for a shape the page left changes nothing", async () => {
